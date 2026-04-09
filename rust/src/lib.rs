@@ -18,11 +18,11 @@
 use std::collections::HashSet;
 
 use adbc_core::{
+    Connection, Database, Driver, Optionable, PartitionedResult, Statement,
     error::Result,
     options::{
         InfoCode, ObjectDepth, OptionConnection, OptionDatabase, OptionStatement, OptionValue,
     },
-    Connection, Database, Driver, Optionable, PartitionedResult, Statement,
 };
 use arrow_array::{RecordBatch, RecordBatchReader};
 use arrow_schema::{ArrowError, Schema, SchemaRef};
@@ -297,6 +297,10 @@ impl Optionable for AthenaStatement {
         todo!()
     }
 }
+pub mod connection;
+pub mod database;
+pub mod driver;
+pub mod statement;
 
 #[cfg(feature = "ffi")]
-adbc_ffi::export_driver!(AdbcAthenaInit, AthenaDriver);
+adbc_ffi::export_driver!(AdbcAthenaInit, driver::AthenaDriver);
