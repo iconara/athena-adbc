@@ -20,5 +20,7 @@ mod database;
 mod driver;
 mod statement;
 
+pub use driver::AthenaDriver;
+
 #[cfg(feature = "ffi")]
 adbc_ffi::export_driver!(AdbcAthenaInit, driver::AthenaDriver);

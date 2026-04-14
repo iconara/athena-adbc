@@ -15,18 +15,29 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use adbc_core::options::AdbcVersion;
 use adbc_core::{Connection, Database, Driver, Statement, error::Error};
-use adbc_driver_manager::{ManagedConnection, ManagedDriver};
 use arrow_array::{Array, RecordBatch, StringArray};
 
-fn connect() -> Result<ManagedConnection, Error> {
+#[cfg(feature = "ffi")]
+fn connect() -> Result<impl Connection, Error> {
+    use adbc_core::options::AdbcVersion;
+    use adbc_driver_manager::ManagedDriver;
+
     let mut driver = ManagedDriver::load_dynamic_from_name(
         "adbc_athena",
         Some(b"AdbcAthenaInit"),
         AdbcVersion::V110,
     )
     .expect("Driver could not be loaded");
+    let database = driver.new_database().unwrap();
+    database.new_connection()
+}
+
+#[cfg(not(feature = "ffi"))]
+fn connect() -> Result<impl Connection, Error> {
+    use adbc_athena::AthenaDriver;
+
+    let mut driver = AthenaDriver::default();
     let database = driver.new_database().unwrap();
     database.new_connection()
 }
