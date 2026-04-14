@@ -33,17 +33,13 @@ use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaBuilder, SchemaRef
 use aws_sdk_athena::{
     Client,
     error::DisplayErrorContext,
+    operation::get_query_results::GetQueryResultsOutput,
     types::{ColumnInfo, ColumnNullable, QueryExecutionState},
 };
 use tokio::{
     runtime::Runtime,
     time::{Duration, sleep},
 };
-
-enum PageState {
-    HasMore(String),
-    Done,
-}
 
 struct AthenaResultReader {
     client: Arc<Client>,
@@ -52,82 +48,96 @@ struct AthenaResultReader {
     schema: SchemaRef,
     athena_types: Vec<AthenaType>,
     pending_batch: Option<RecordBatch>,
-    page_state: PageState,
+    next_token: Option<String>,
 }
 
 impl AthenaResultReader {
-    fn new(
+    async fn fetch(
+        client: &Client,
+        query_execution_id: &str,
+        next_token: Option<&str>,
+    ) -> Result<GetQueryResultsOutput> {
+        let mut request = client
+            .get_query_results()
+            .query_execution_id(query_execution_id);
+        if let Some(token) = next_token {
+            request = request.next_token(token);
+        }
+        request.send().await.map_err(|e| {
+            Error::with_message_and_status(DisplayErrorContext(e).to_string(), Status::IO)
+        })
+    }
+
+    async fn create(
         client: Arc<Client>,
         runtime: Arc<Runtime>,
         query_execution_id: String,
-        schema: SchemaRef,
-        athena_types: Vec<AthenaType>,
-        first_batch: RecordBatch,
-        next_token: Option<String>,
-    ) -> Self {
-        let page_state = match next_token {
-            Some(token) => PageState::HasMore(token),
-            None => PageState::Done,
-        };
-        Self {
+    ) -> Result<Self> {
+        let response = Self::fetch(&client, &query_execution_id, None).await?;
+        let result_set = response.result_set().ok_or_else(|| {
+            Error::with_message_and_status(
+                "GetQueryResults returned no result set",
+                Status::Internal,
+            )
+        })?;
+        let meta_data = result_set.result_set_metadata().ok_or_else(|| {
+            Error::with_message_and_status(
+                "GetQueryResults returned no result set metadata",
+                Status::Internal,
+            )
+        })?;
+        let next_token = response.next_token().map(str::to_string);
+        let (schema, athena_types) = schema_from_metadata(meta_data);
+        let pending_batch = Some(rows_to_record_batch(
+            result_set.rows().iter().skip(1),
+            &schema,
+            &athena_types,
+        )?);
+        Ok(Self {
             client,
             runtime,
             query_execution_id,
             schema,
             athena_types,
-            pending_batch: Some(first_batch),
-            page_state,
-        }
+            pending_batch,
+            next_token,
+        })
+    }
+
+    fn fetch_next_page_and_token(
+        &self,
+        next_token: &str,
+    ) -> std::result::Result<(RecordBatch, Option<String>), ArrowError> {
+        let response = self
+            .runtime
+            .block_on(Self::fetch(
+                &self.client,
+                &self.query_execution_id,
+                Some(next_token),
+            ))
+            .map_err(|e| ArrowError::ExternalError(Box::new(e)))?;
+        let next_token = response.next_token().map(str::to_string);
+        let result_set = response.result_set().ok_or_else(|| {
+            ArrowError::ExternalError(Box::new(std::io::Error::other(
+                "GetQueryResults returned no result set",
+            )))
+        })?;
+        let record_batch =
+            rows_to_record_batch(result_set.rows().iter(), &self.schema, &self.athena_types)
+                .map_err(|e| ArrowError::ExternalError(Box::new(e)))?;
+        Ok((record_batch, next_token))
     }
 
     fn fetch_next_page(&mut self) -> Option<std::result::Result<RecordBatch, ArrowError>> {
-        let token = match &self.page_state {
-            PageState::HasMore(token) => token.clone(),
-            PageState::Done => return None,
-        };
-
-        let response = self.runtime.block_on(
-            self.client
-                .get_query_results()
-                .query_execution_id(&self.query_execution_id)
-                .next_token(&token)
-                .send(),
-        );
-
-        match response {
-            Err(e) => {
-                self.page_state = PageState::Done;
-                Some(Err(ArrowError::ExternalError(Box::new(
-                    std::io::Error::other(e.to_string()),
-                ))))
-            }
-            Ok(output) => {
-                self.page_state = match output.next_token() {
-                    Some(t) => PageState::HasMore(t.to_string()),
-                    None => PageState::Done,
-                };
-                let result_set = match output.result_set() {
-                    Some(rs) => rs,
-                    None => {
-                        return Some(Err(ArrowError::ExternalError(Box::new(
-                            std::io::Error::other("GetQueryResults returned no result set"),
-                        ))));
-                    }
-                };
-                Some(
-                    rows_to_record_batch(
-                        result_set.rows().iter(),
-                        &self.schema,
-                        &self.athena_types,
-                    )
-                    .map_err(|e| {
-                        ArrowError::ExternalError(Box::new(std::io::Error::other(
-                            DisplayErrorContext(e).to_string(),
-                        )))
-                    }),
-                )
-            }
-        }
+        self.next_token
+            .take()
+            .map(|next_token| self.fetch_next_page_and_token(&next_token))
+            .map(|page_result| {
+                page_result.map(|(record_batch, next_token)| {
+                    self.next_token = next_token;
+                    record_batch
+                })
+            })
     }
 }
 
@@ -325,48 +335,13 @@ fn rows_to_record_batch<'a>(
     Ok(RecordBatch::from(&struct_builder.finish()))
 }
 
-async fn fetch_results(
-    client: Arc<Client>,
-    runtime: Arc<Runtime>,
-    query_execution_id: String,
-) -> Result<AthenaResultReader> {
-    let output = client
-        .get_query_results()
-        .query_execution_id(&query_execution_id)
-        .send()
-        .await
-        .map_err(|e| Error::with_message_and_status(e.to_string(), Status::IO))?;
-    let result_set = output.result_set().ok_or_else(|| {
-        Error::with_message_and_status("GetQueryResults returned no result set", Status::Internal)
-    })?;
-    let meta_data = result_set.result_set_metadata().ok_or_else(|| {
-        Error::with_message_and_status(
-            "GetQueryResults returned no result set metadata",
-            Status::Internal,
-        )
-    })?;
-    let (schema, athena_types) = schema_from_metadata(meta_data);
-    let next_token = output.next_token().map(str::to_string);
-    let first_batch =
-        rows_to_record_batch(result_set.rows().iter().skip(1), &schema, &athena_types)?;
-    Ok(AthenaResultReader::new(
-        client,
-        runtime,
-        query_execution_id,
-        schema,
-        athena_types,
-        first_batch,
-        next_token,
-    ))
-}
-
 async fn execute_query(
     client: Arc<Client>,
     runtime: Arc<Runtime>,
     query_string: &str,
 ) -> Result<Box<dyn RecordBatchReader + Send + 'static>> {
     let query_execution_id = run_query(&client, query_string).await?;
-    let reader = fetch_results(client, runtime, query_execution_id).await?;
+    let reader = AthenaResultReader::create(client, runtime, query_execution_id).await?;
     Ok(Box::new(reader))
 }
 
