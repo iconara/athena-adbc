@@ -25,6 +25,9 @@ adbc_core = "0.23.0"
 adbc_ffi = { version = "0.23.0", optional = true }
 arrow-array = "58.1.0"
 arrow-schema = "58.1.0"
+aws-config = "1.8.13"
+aws-sdk-athena = "1.100.0"
+tokio = { version = "1.51.1", features = ["full"] }
 
 [lib]
 crate-type = ["lib", "cdylib"]

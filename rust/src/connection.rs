@@ -15,21 +15,53 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
-use adbc_core::{Connection, Optionable, error::Result, options::{InfoCode, ObjectDepth, OptionConnection, OptionValue}};
+use adbc_core::{
+    Connection, Optionable,
+    error::Result,
+    options::{InfoCode, ObjectDepth, OptionConnection, OptionValue},
+};
 use arrow_array::RecordBatchReader;
+use aws_config::{BehaviorVersion, meta::region::RegionProviderChain};
+use aws_sdk_athena::Client;
+use tokio::runtime::Runtime;
 
 use crate::statement::AthenaStatement;
 
-#[derive(Default)]
-pub struct AthenaConnection {}
+pub struct AthenaConnection {
+    runtime: Arc<Runtime>,
+    client: Arc<Client>,
+}
+
+impl AthenaConnection {
+    pub(crate) fn new(runtime: Arc<Runtime>) -> Self {
+        let client = runtime.block_on(AthenaConnection::create_athena_client());
+        Self {
+            runtime,
+            client: Arc::new(client),
+        }
+    }
+
+    async fn create_athena_client() -> Client {
+        let region_provider = RegionProviderChain::default_provider().or_else("us-east-1");
+        let config = aws_config::defaults(BehaviorVersion::latest())
+            .region(region_provider)
+            .load()
+            .await;
+        Client::new(&config)
+    }
+}
 
 impl Connection for AthenaConnection {
     type StatementType = AthenaStatement;
 
     fn new_statement(&mut self) -> Result<Self::StatementType> {
-        Ok(Self::StatementType::default())
+        Ok(AthenaStatement {
+            sql_query: None,
+            runtime: self.runtime.clone(),
+            client: self.client.clone(),
+        })
     }
 
     fn cancel(&mut self) -> Result<()> {
@@ -121,4 +153,3 @@ impl Optionable for AthenaConnection {
         todo!()
     }
 }
-

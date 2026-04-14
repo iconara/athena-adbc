@@ -16,19 +16,54 @@
 // under the License.
 
 use adbc_core::options::AdbcVersion;
-use adbc_core::{Driver, Database, Connection, Statement};
-use adbc_driver_manager::ManagedDriver;
+use adbc_core::{Connection, Database, Driver, Statement, error::Error};
+use adbc_driver_manager::{ManagedConnection, ManagedDriver};
+use arrow_array::{Array, RecordBatch, StringArray};
 
-#[test]
-fn test_create_statement() {
+fn connect() -> Result<ManagedConnection, Error> {
     let mut driver = ManagedDriver::load_dynamic_from_name(
         "adbc_athena",
         Some(b"AdbcAthenaInit"),
-        AdbcVersion::V110
+        AdbcVersion::V110,
     )
-    .unwrap();
+    .expect("Driver could not be loaded");
     let database = driver.new_database().unwrap();
-    let mut connection = database.new_connection().unwrap();
+    database.new_connection()
+}
+
+#[test]
+fn test_run_query() {
+    let mut connection = connect().unwrap();
     let mut statement = connection.new_statement().unwrap();
-    let _ = statement.set_sql_query("SELECT 'world' AS Hello");
+    let _ = statement.set_sql_query("SELECT 'world' AS hello").unwrap();
+    let result_set = statement.execute().unwrap();
+    let batches: Vec<RecordBatch> = result_set.map(|b| b.unwrap()).collect();
+    let batch = &batches[0];
+    let col_index = batch
+        .schema()
+        .index_of("hello")
+        .expect("column 'hello' not found");
+    let col = batch
+        .column(col_index)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("column 'hello' should be a StringArray");
+    assert_eq!(col.value(0), "world");
+}
+
+#[test]
+fn test_many_result_pages() {
+    let mut connection = connect().unwrap();
+    let mut statement = connection.new_statement().unwrap();
+    let _ = statement
+        .set_sql_query(
+            "SELECT sequential_number FROM TABLE(sequence(start => 1, stop => 4321, step => 1))",
+        )
+        .unwrap();
+    let result_set = statement.execute().unwrap();
+    let mut row_count = 0;
+    for batch in result_set {
+        row_count += batch.unwrap().num_rows();
+    }
+    assert_eq!(row_count, 4321);
 }

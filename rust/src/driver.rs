@@ -15,25 +15,43 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::sync::Arc;
+
 use adbc_core::{Driver, Optionable, error::Result, options::OptionValue};
+use tokio::runtime::Runtime;
 
 use crate::database::AthenaDatabase;
 
-#[derive(Default)]
-pub struct AthenaDriver {}
+pub struct AthenaDriver {
+    runtime: Arc<Runtime>,
+}
+
+impl Default for AthenaDriver {
+    fn default() -> Self {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("Tokio runtime initialization");
+        Self {
+            runtime: Arc::new(runtime),
+        }
+    }
+}
 
 impl Driver for AthenaDriver {
     type DatabaseType = AthenaDatabase;
 
     fn new_database(&mut self) -> Result<Self::DatabaseType> {
-        Ok(Self::DatabaseType::default())
+        Ok(AthenaDatabase {
+            runtime: self.runtime.clone(),
+        })
     }
 
     fn new_database_with_opts(
         &mut self,
         opts: impl IntoIterator<Item = (<Self::DatabaseType as Optionable>::Option, OptionValue)>,
     ) -> Result<Self::DatabaseType> {
-        let mut database = Self::DatabaseType::default();
+        let mut database = self.new_database()?;
         for (key, value) in opts {
             database.set_option(key, value)?;
         }
