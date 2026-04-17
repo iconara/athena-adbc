@@ -27,41 +27,34 @@ use aws_config::{BehaviorVersion, meta::region::RegionProviderChain};
 use aws_sdk_athena::Client;
 use tokio::runtime::Runtime;
 
-use crate::statement::AthenaStatement;
+use crate::{athena::AthenaClient, statement::AthenaStatement};
 
 pub struct AthenaConnection {
-    runtime: Arc<Runtime>,
-    client: Arc<Client>,
+    athena_client: Arc<AthenaClient>,
 }
 
 impl AthenaConnection {
     pub(crate) fn new(runtime: Arc<Runtime>) -> Self {
-        let client = runtime.block_on(AthenaConnection::create_athena_client());
-        Self {
-            runtime,
-            client: Arc::new(client),
-        }
+        let aws_sdk_client = Arc::new(runtime.block_on(create_aws_sdk_client()));
+        let athena_client = Arc::new(AthenaClient::new(aws_sdk_client, runtime));
+        Self { athena_client }
     }
+}
 
-    async fn create_athena_client() -> Client {
-        let region_provider = RegionProviderChain::default_provider().or_else("us-east-1");
-        let config = aws_config::defaults(BehaviorVersion::latest())
-            .region(region_provider)
-            .load()
-            .await;
-        Client::new(&config)
-    }
+async fn create_aws_sdk_client() -> Client {
+    let region_provider = RegionProviderChain::default_provider().or_else("us-east-1");
+    let config = aws_config::defaults(BehaviorVersion::latest())
+        .region(region_provider)
+        .load()
+        .await;
+    Client::new(&config)
 }
 
 impl Connection for AthenaConnection {
     type StatementType = AthenaStatement;
 
     fn new_statement(&mut self) -> Result<Self::StatementType> {
-        Ok(AthenaStatement {
-            sql_query: None,
-            runtime: self.runtime.clone(),
-            client: self.client.clone(),
-        })
+        Ok(AthenaStatement::new(self.athena_client.clone()))
     }
 
     fn cancel(&mut self) -> Result<()> {
