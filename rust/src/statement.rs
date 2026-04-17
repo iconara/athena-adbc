@@ -444,3 +444,153 @@ impl Optionable for AthenaStatement {
         todo!()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use adbc_core::Statement;
+    use arrow_array::{Int32Array, StringArray};
+    use assertables::assert_all;
+    use aws_sdk_athena::{
+        operation::{
+            get_query_execution::GetQueryExecutionOutput, get_query_results::GetQueryResultsOutput,
+            start_query_execution::StartQueryExecutionOutput,
+        },
+        types::{
+            ColumnInfo, ColumnNullable, Datum, QueryExecution, QueryExecutionState,
+            QueryExecutionStatus, ResultSet, ResultSetMetadata, Row,
+        },
+    };
+    use aws_smithy_mocks::{Rule, RuleMode, mock, mock_client};
+
+    fn make_runtime() -> Arc<Runtime> {
+        Arc::new(Runtime::new().expect("failed to create tokio runtime"))
+    }
+
+    fn create_result_set(schema: &[(&str, &str)], data: &[&[&str]]) -> ResultSet {
+        let mut columns = Vec::new();
+        let mut first_row_data = Vec::new();
+        for (name, typ) in schema {
+            columns.push(
+                ColumnInfo::builder()
+                    .name(*name)
+                    .r#type(*typ)
+                    .nullable(ColumnNullable::Nullable)
+                    .build()
+                    .unwrap(),
+            );
+            first_row_data.push(Datum::builder().var_char_value(*name).build());
+        }
+        let metadata = ResultSetMetadata::builder()
+            .set_column_info(Some(columns))
+            .build();
+        let mut rows = Vec::new();
+        rows.push(Row::builder().set_data(Some(first_row_data)).build());
+        for r in data {
+            let mut row_data = Vec::new();
+            for cell in *r {
+                row_data.push(Datum::builder().var_char_value(*cell).build());
+            }
+            rows.push(Row::builder().set_data(Some(row_data)).build());
+        }
+        ResultSet::builder()
+            .result_set_metadata(metadata)
+            .set_rows(Some(rows))
+            .build()
+    }
+
+    fn mock_athena_lifecycle(
+        states: Vec<QueryExecutionState>,
+        result_set: ResultSet,
+    ) -> (Client, Vec<Rule>) {
+        let query_execution_id = "test-query-execution-id";
+        let mut rules = Vec::new();
+        let start_rule =
+            mock!(aws_sdk_athena::Client::start_query_execution).then_output(move || {
+                StartQueryExecutionOutput::builder()
+                    .query_execution_id(query_execution_id)
+                    .build()
+            });
+        rules.push(start_rule);
+        for state in states {
+            let get_execution_rule = mock!(aws_sdk_athena::Client::get_query_execution)
+                .match_requests(|req| req.query_execution_id() == Some(query_execution_id))
+                .then_output(move || {
+                    let status = QueryExecutionStatus::builder().state(state.clone()).build();
+                    GetQueryExecutionOutput::builder()
+                        .query_execution(QueryExecution::builder().status(status).build())
+                        .build()
+                });
+            rules.push(get_execution_rule);
+        }
+        let get_results_rule = mock!(aws_sdk_athena::Client::get_query_results)
+            .match_requests(|req| req.query_execution_id() == Some(query_execution_id))
+            .then_output(move || {
+                GetQueryResultsOutput::builder()
+                    .result_set(result_set.clone())
+                    .build()
+            });
+        rules.push(get_results_rule);
+        let client = mock_client!(aws_sdk_athena, RuleMode::Sequential, rules.as_slice());
+        (client, rules)
+    }
+
+    fn athena_happy_path() -> (Client, Vec<Rule>) {
+        let states = vec![
+            QueryExecutionState::Queued,
+            QueryExecutionState::Running,
+            QueryExecutionState::Running,
+            QueryExecutionState::Succeeded,
+        ];
+        let result_set = create_result_set(
+            &[("col1", "integer"), ("col2", "string")],
+            &[&["1", "a"], &["2", "b"]],
+        );
+        mock_athena_lifecycle(states, result_set)
+    }
+
+    #[test]
+    fn execute_makes_the_athena_query_lifecycle_api_calls() {
+        let (client, rules) = athena_happy_path();
+        let runtime = make_runtime();
+        let mut statement = AthenaStatement {
+            sql_query: None,
+            runtime: Arc::clone(&runtime),
+            client: Arc::new(client),
+        };
+        statement.set_sql_query("SELECT 1").unwrap();
+        let _ = statement.execute();
+        assert_all!(rules.iter(), |r: &Rule| r.num_calls() == 1);
+    }
+
+    #[test]
+    fn execute_returns_the_query_results_as_a_record_batch() {
+        let (client, _) = athena_happy_path();
+        let runtime = make_runtime();
+        let mut statement = AthenaStatement {
+            sql_query: None,
+            runtime: Arc::clone(&runtime),
+            client: Arc::new(client),
+        };
+        statement.set_sql_query("SELECT 1").unwrap();
+        let batches: Vec<RecordBatch> = statement
+            .execute()
+            .unwrap()
+            .map(|batch| batch.unwrap())
+            .collect();
+        let col1 = batches[0]
+            .column_by_name("col1")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .expect("col1 should be an Int32Array");
+        let col2 = batches[0]
+            .column_by_name("col2")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("col2 should be a StringArray");
+        assert_eq!(col1, &Int32Array::from(vec![1, 2]));
+        assert_eq!(col2, &StringArray::from(vec!["a", "b"]));
+    }
+}

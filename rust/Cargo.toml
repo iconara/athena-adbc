@@ -35,3 +35,8 @@ crate-type = ["lib", "cdylib"]
 [features]
 default = []
 ffi = ["dep:adbc_ffi"]
+
+[dev-dependencies]
+assertables = "9.9.0"
+aws-sdk-athena = { version = "1.100.0", features = ["test-util"] }
+aws-smithy-mocks = "0.2.6"
