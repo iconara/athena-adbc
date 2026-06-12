@@ -241,10 +241,14 @@ func TestIntegration_DataTypes(t *testing.T) {
 	const query = `
 SELECT
   CAST('hello'           AS VARCHAR)   AS str_col,
+  CAST('hello'           AS VARBINARY) AS bin_col,
+  CAST(NULL              AS VARCHAR)   AS null_col,
   CAST(42                AS BIGINT)    AS bigint_col,
   CAST(7                 AS INTEGER)   AS int_col,
+  CAST(3.14              AS REAL)      AS float_col,
   CAST(3.14              AS DOUBLE)    AS double_col,
-  true                                 AS bool_col,
+  DECIMAL '3.14'                       AS decimal_col,
+  TRUE                                 AS bool_col,
   DATE        '2024-01-15'             AS date_col,
   TIMESTAMP '2024-01-15 12:30:00.123'                  AS ts_3_col,
   TIMESTAMP '2024-01-15 12:30:00.123456'               AS ts_6_col,
@@ -252,44 +256,56 @@ SELECT
   TIMESTAMP '2024-01-15 12:30:00.123 America/New_York' AS ts_tz_name_col,
   TIMESTAMP '2024-01-15 12:30:00.123 +03:45'           AS ts_tz_offset_col,
   ARRAY[1, 2, 3]                       AS array_col,
-  MAP(ARRAY['k'], ARRAY['v'])          AS map_col
+  MAP(ARRAY['k'], ARRAY['v'])          AS map_col,
+  CAST(MAP(ARRAY['k'], ARRAY['v']) AS JSON) AS json_col
 `
 	rec := runQuery(t, conn, query)
 
-	require.EqualValues(t, 13, rec.NumCols(), "expected 13 columns")
+	require.EqualValues(t, 18, rec.NumCols(), "expected 18 columns")
 	require.EqualValues(t, 1, rec.NumRows(), "expected 1 row")
 
 	schema := rec.Schema()
 
+	decimalType := &arrow.Decimal128Type{Precision: 3, Scale: 2}
+	
 	// Scalar types map to their native Arrow types.
-	assert.Equal(t, arrow.BinaryTypes.String,         schema.Field(0).Type, "str_col")
-	assert.Equal(t, arrow.PrimitiveTypes.Int64,        schema.Field(1).Type, "bigint_col")
-	assert.Equal(t, arrow.PrimitiveTypes.Int32,        schema.Field(2).Type, "int_col")
-	assert.Equal(t, arrow.PrimitiveTypes.Float64,      schema.Field(3).Type, "double_col")
-	assert.Equal(t, arrow.FixedWidthTypes.Boolean,     schema.Field(4).Type, "bool_col")
-	assert.Equal(t, arrow.FixedWidthTypes.Date32,      schema.Field(5).Type, "date_col")
+	assert.Equal(t, arrow.BinaryTypes.String,          schema.Field(0).Type, "str_col")
+	assert.Equal(t, arrow.BinaryTypes.Binary,          schema.Field(1).Type, "bin_col")
+	assert.Equal(t, arrow.BinaryTypes.String,          schema.Field(2).Type, "null_col")
+	assert.Equal(t, arrow.PrimitiveTypes.Int64,        schema.Field(3).Type, "bigint_col")
+	assert.Equal(t, arrow.PrimitiveTypes.Int32,        schema.Field(4).Type, "int_col")
+	assert.Equal(t, arrow.PrimitiveTypes.Float32,      schema.Field(5).Type, "float_col")
+	assert.Equal(t, arrow.PrimitiveTypes.Float64,      schema.Field(6).Type, "double_col")
+	assert.Equal(t, decimalType,                       schema.Field(7).Type, "decimal_col")
+	assert.Equal(t, arrow.FixedWidthTypes.Boolean,     schema.Field(8).Type, "bool_col")
+	assert.Equal(t, arrow.FixedWidthTypes.Date32,      schema.Field(9).Type, "date_col")
 
 	// Timestamp types map to nanosecond timestamp arrays, with or without time zone
 	tsType := &arrow.TimestampType{Unit: arrow.Nanosecond}
 	tstzType := &arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: "UTC"}
-
-	assert.Equal(t, tsType, schema.Field(6).Type, "ts_3_col")
-	assert.Equal(t, tsType, schema.Field(7).Type, "ts_6_col")
-	assert.Equal(t, tsType, schema.Field(8).Type, "ts_9_col")
-	assert.Equal(t, tstzType, schema.Field(9).Type, "ts_tz_name_col")
-	assert.Equal(t, tstzType, schema.Field(10).Type, "ts_tz_offset_col")
+	
+	assert.Equal(t, tsType, schema.Field(10).Type, "ts_3_col")
+	assert.Equal(t, tsType, schema.Field(11).Type, "ts_6_col")
+	assert.Equal(t, tsType, schema.Field(12).Type, "ts_9_col")
+	assert.Equal(t, tstzType, schema.Field(13).Type, "ts_tz_name_col")
+	assert.Equal(t, tstzType, schema.Field(14).Type, "ts_tz_offset_col")
 
 	// Nested types are stringified.
-	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(11).Type, "array_col")
-	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(12).Type, "map_col")
+	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(15).Type, "array_col")
+	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(16).Type, "map_col")
+	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(17).Type, "json_col")
 
 	// Spot-check scalar values.
 	assert.Equal(t, "hello", rec.Column(0).(*array.String).Value(0))
-	assert.EqualValues(t, 42, rec.Column(1).(*array.Int64).Value(0))
-	assert.EqualValues(t, 7, rec.Column(2).(*array.Int32).Value(0))
-	assert.InDelta(t, 3.14, rec.Column(3).(*array.Float64).Value(0), 1e-9)
-	assert.True(t, rec.Column(4).(*array.Boolean).Value(0))
-	assert.EqualValues(t, arrow.Date32(19737), rec.Column(5).(*array.Date32).Value(0), "date_col: days since epoch")
+	assert.Equal(t, []byte("hello"), rec.Column(1).(*array.Binary).Value(0))
+	assert.True(t, rec.Column(2).IsNull(0), "null_col should be null")
+	assert.EqualValues(t, 42, rec.Column(3).(*array.Int64).Value(0))
+	assert.EqualValues(t, 7, rec.Column(4).(*array.Int32).Value(0))
+	assert.InDelta(t, 3.14, rec.Column(5).(*array.Float32).Value(0), 1e-2)
+	assert.InDelta(t, 3.14, rec.Column(6).(*array.Float64).Value(0), 1e-9)
+	assert.InDelta(t, 3.14, rec.Column(7).(*array.Decimal128).Value(0).ToFloat64(2), 1e-9)
+	assert.True(t, rec.Column(8).(*array.Boolean).Value(0))
+	assert.EqualValues(t, arrow.Date32(19737), rec.Column(9).(*array.Date32).Value(0), "date_col: days since epoch")
 
 	// 2024-01-15 12:30:00 UTC in nanoseconds since epoch:
 	// 19737 days * 86400 s/day = 1_705_276_800 s
@@ -298,19 +314,20 @@ SELECT
 	const baseNs = int64(1_705_321_800) * 1_000_000_000
 
 	// Timestamps without time zone — stored as-is in nanoseconds.
-	assert.EqualValues(t, baseNs+123_000_000, rec.Column(6).(*array.Timestamp).Value(0), "ts_3_col")
-	assert.EqualValues(t, baseNs+123_456_000, rec.Column(7).(*array.Timestamp).Value(0), "ts_6_col")
-	assert.EqualValues(t, baseNs+123_456_789, rec.Column(8).(*array.Timestamp).Value(0), "ts_9_col")
+	assert.EqualValues(t, baseNs+123_000_000, rec.Column(10).(*array.Timestamp).Value(0), "ts_3_col")
+	assert.EqualValues(t, baseNs+123_456_000, rec.Column(11).(*array.Timestamp).Value(0), "ts_6_col")
+	assert.EqualValues(t, baseNs+123_456_789, rec.Column(12).(*array.Timestamp).Value(0), "ts_9_col")
 
 	// Timestamps with time zone — Athena normalizes to UTC before returning.
 	// 12:30:00.123 America/New_York (EST, UTC-5 in January) = 17:30:00.123 UTC
 	const estOffsetNs = 5 * 3600 * int64(1_000_000_000)
-	assert.EqualValues(t, baseNs+estOffsetNs+123_000_000, rec.Column(9).(*array.Timestamp).Value(0), "ts_tz_name_col")
+	assert.EqualValues(t, baseNs+estOffsetNs+123_000_000, rec.Column(13).(*array.Timestamp).Value(0), "ts_tz_name_col")
 	// 12:30:00.123 +03:45 = 08:45:00.123 UTC (subtract 3h45m)
 	const plus0345Ns = (3*3600 + 45*60) * int64(1_000_000_000)
-	assert.EqualValues(t, baseNs-plus0345Ns+123_000_000, rec.Column(10).(*array.Timestamp).Value(0), "ts_tz_offset_col")
+	assert.EqualValues(t, baseNs-plus0345Ns+123_000_000, rec.Column(14).(*array.Timestamp).Value(0), "ts_tz_offset_col")
 
-	// Nested columns must be non-empty strings.
-	assert.NotEmpty(t, rec.Column(11).(*array.String).Value(0), "array_col should be non-empty")
-	assert.NotEmpty(t, rec.Column(12).(*array.String).Value(0), "map_col should be non-empty")
+	// Nested columns must be strings.
+	assert.Equal(t, "[1, 2, 3]", rec.Column(15).(*array.String).Value(0))
+	assert.Equal(t, "{k=v}", rec.Column(16).(*array.String).Value(0))
+	assert.Equal(t, "{\"k\":\"v\"}", rec.Column(17).(*array.String).Value(0))
 }
