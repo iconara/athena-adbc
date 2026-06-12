@@ -48,8 +48,8 @@ func TestAthenaTypeStringToArrow(t *testing.T) {
 		{"real", arrow.PrimitiveTypes.Float32},
 		{"boolean", arrow.FixedWidthTypes.Boolean},
 		{"date", arrow.FixedWidthTypes.Date32},
-		{"timestamp", arrow.FixedWidthTypes.Timestamp_us},
-		{"timestamp with time zone", arrow.FixedWidthTypes.Timestamp_us},
+		{"timestamp", &arrow.TimestampType{Unit: arrow.Nanosecond}},
+		{"timestamp with time zone", &arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: "UTC"}},
 		{"varbinary", arrow.BinaryTypes.Binary},
 		{"binary", arrow.BinaryTypes.Binary},
 		{"decimal", arrow.BinaryTypes.String},
@@ -165,41 +165,56 @@ func TestParseDateToDays(t *testing.T) {
 	assert.Equal(t, int32(10957), days)
 }
 
-func TestParseTimestampToMillis(t *testing.T) {
-	// 1970-01-01 00:00:00 = 0 milliseconds
-	ms, err := parseTimestampToMillis("1970-01-01 00:00:00")
+func TestParseTimestampToNanos(t *testing.T) {
+	// 1970-01-01 00:00:00 = 0 nanoseconds
+	ns, err := parseTimestampToNanos("1970-01-01 00:00:00")
 	require.NoError(t, err)
-	assert.Equal(t, int64(0), ms)
+	assert.Equal(t, int64(0), ns)
 
-	// 1970-01-01 00:00:01 = 1_000 milliseconds
-	ms, err = parseTimestampToMillis("1970-01-01 00:00:01")
+	// 1970-01-01 00:00:01 = 1_000_000_000 nanoseconds
+	ns, err = parseTimestampToNanos("1970-01-01 00:00:01")
 	require.NoError(t, err)
-	assert.Equal(t, int64(1_000), ms)
+	assert.Equal(t, int64(1_000_000_000), ns)
 
-	// With fractional seconds — ".5" → 500 ms
-	ms, err = parseTimestampToMillis("1970-01-01 00:00:00.5")
+	// With fractional seconds — ".5" → 500_000_000 ns
+	ns, err = parseTimestampToNanos("1970-01-01 00:00:00.5")
 	require.NoError(t, err)
-	assert.Equal(t, int64(500), ms)
+	assert.Equal(t, int64(500_000_000), ns)
 
-	// With more digits — first 3 kept, remainder truncated
-	ms, err = parseTimestampToMillis("1970-01-01 00:00:00.123456")
+	// Millisecond precision — ".123" → 123_000_000 ns
+	ns, err = parseTimestampToNanos("1970-01-01 00:00:00.123")
 	require.NoError(t, err)
-	assert.Equal(t, int64(123), ms)
+	assert.Equal(t, int64(123_000_000), ns)
+
+	// Microsecond precision — ".123456" → 123_456_000 ns
+	ns, err = parseTimestampToNanos("1970-01-01 00:00:00.123456")
+	require.NoError(t, err)
+	assert.Equal(t, int64(123_456_000), ns)
+
+	// Nanosecond precision — full 9 digits preserved
+	ns, err = parseTimestampToNanos("1970-01-01 00:00:00.123456789")
+	require.NoError(t, err)
+	assert.Equal(t, int64(123_456_789), ns)
 
 	// Timestamp with time zone — " UTC" suffix must be ignored
-	ms, err = parseTimestampToMillis("1970-01-01 00:00:01.000 UTC")
+	ns, err = parseTimestampToNanos("1970-01-01 00:00:01.000000000 UTC")
 	require.NoError(t, err)
-	assert.Equal(t, int64(1_000), ms)
+	assert.Equal(t, int64(1_000_000_000), ns)
 
 	// Timestamp with time zone — no fractional seconds, space+tz suffix
-	ms, err = parseTimestampToMillis("1970-01-01 00:00:01 UTC")
+	ns, err = parseTimestampToNanos("1970-01-01 00:00:01 UTC")
 	require.NoError(t, err)
-	assert.Equal(t, int64(1_000), ms)
+	assert.Equal(t, int64(1_000_000_000), ns)
 
-	// Timestamp with IANA time zone name suffix
-	ms, err = parseTimestampToMillis("1970-01-01 00:00:00.000 America/New_York")
+	// Timestamp with IANA time zone name suffix — midnight Eastern = 05:00 UTC
+	ns, err = parseTimestampToNanos("1970-01-01 00:00:00.000000000 America/New_York")
 	require.NoError(t, err)
-	assert.Equal(t, int64(0), ms)
+	assert.Equal(t, int64(5*3600*1_000_000_000), ns)
+
+	// Timestamp with time zone offset — midnight in +03:45 = previous day 20:15 UTC
+	ns, err = parseTimestampToNanos("1970-01-01 00:00:00.000000000 +03:45")
+	require.NoError(t, err)
+	assert.Equal(t, int64(-(3*3600+45*60)*1_000_000_000), ns)
 }
 
 // TestBuildRecordBatch_AllTypes exercises appendValue for every Athena type
@@ -309,18 +324,67 @@ func TestBuildRecordBatch_AllTypes(t *testing.T) {
 		},
 		{
 			"timestamp",
-			"1970-01-01 00:00:01.000000",
+			"1970-01-01 00:00:01",
 			func(t *testing.T, col arrow.Array) {
-				require.Equal(t, arrow.FixedWidthTypes.Timestamp_us, col.DataType())
-				assert.EqualValues(t, 1_000, col.(*array.Timestamp).Value(0))
+				dt := &arrow.TimestampType{Unit: arrow.Nanosecond}
+				require.Equal(t, dt, col.DataType())
+				assert.EqualValues(t, 1_000_000_000, col.(*array.Timestamp).Value(0))
+			},
+		},
+		{
+			"timestamp",
+			"1970-01-01 00:00:01.123",
+			func(t *testing.T, col arrow.Array) {
+				dt := &arrow.TimestampType{Unit: arrow.Nanosecond}
+				require.Equal(t, dt, col.DataType())
+				assert.EqualValues(t, 1_123_000_000, col.(*array.Timestamp).Value(0))
+			},
+		},
+		{
+			"timestamp",
+			"1970-01-01 00:00:01.123456",
+			func(t *testing.T, col arrow.Array) {
+				dt := &arrow.TimestampType{Unit: arrow.Nanosecond}
+				require.Equal(t, dt, col.DataType())
+				assert.EqualValues(t, 1_123_456_000, col.(*array.Timestamp).Value(0))
+			},
+		},
+		{
+			"timestamp",
+			"1970-01-01 00:00:01.123456789",
+			func(t *testing.T, col arrow.Array) {
+				dt := &arrow.TimestampType{Unit: arrow.Nanosecond}
+				require.Equal(t, dt, col.DataType())
+				assert.EqualValues(t, 1_123_456_789, col.(*array.Timestamp).Value(0))
 			},
 		},
 		{
 			"timestamp with time zone",
-			"1970-01-01 00:00:01.000000 UTC",
+			"1970-01-01 00:00:01.234 UTC",
 			func(t *testing.T, col arrow.Array) {
-				require.Equal(t, arrow.FixedWidthTypes.Timestamp_us, col.DataType())
-				assert.EqualValues(t, 1_000, col.(*array.Timestamp).Value(0))
+				dt := &arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: "UTC"}
+				require.Equal(t, dt, col.DataType())
+				assert.EqualValues(t, 1_234_000_000, col.(*array.Timestamp).Value(0))
+			},
+		},
+		{
+			"timestamp with time zone",
+			"1970-01-01 00:00:01.234 America/New_York",
+			func(t *testing.T, col arrow.Array) {
+				dt := &arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: "UTC"}
+				require.Equal(t, dt, col.DataType())
+				// 00:00:01.234 Eastern = 05:00:01.234 UTC
+				assert.EqualValues(t, 5*3600*1_000_000_000+1_234_000_000, col.(*array.Timestamp).Value(0))
+			},
+		},
+		{
+			"timestamp with time zone",
+			"1970-01-01 03:45:01.234 +03:45",
+			func(t *testing.T, col arrow.Array) {
+				dt := &arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: "UTC"}
+				require.Equal(t, dt, col.DataType())
+				// 03:45:01.234 in +03:45 = 00:00:01.234 UTC
+				assert.EqualValues(t, 1_234_000_000, col.(*array.Timestamp).Value(0))
 			},
 		},
 		{

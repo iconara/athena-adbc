@@ -246,13 +246,17 @@ SELECT
   CAST(3.14              AS DOUBLE)    AS double_col,
   true                                 AS bool_col,
   DATE        '2024-01-15'             AS date_col,
-  TIMESTAMP   '2024-01-15 12:30:00.123' AS ts_col,
+  TIMESTAMP '2024-01-15 12:30:00.123'                  AS ts_3_col,
+  TIMESTAMP '2024-01-15 12:30:00.123456'               AS ts_6_col,
+  TIMESTAMP '2024-01-15 12:30:00.123456789'            AS ts_9_col,
+  TIMESTAMP '2024-01-15 12:30:00.123 America/New_York' AS ts_tz_name_col,
+  TIMESTAMP '2024-01-15 12:30:00.123 +03:45'           AS ts_tz_offset_col,
   ARRAY[1, 2, 3]                       AS array_col,
   MAP(ARRAY['k'], ARRAY['v'])          AS map_col
 `
 	rec := runQuery(t, conn, query)
 
-	require.EqualValues(t, 9, rec.NumCols(), "expected 9 columns")
+	require.EqualValues(t, 13, rec.NumCols(), "expected 13 columns")
 	require.EqualValues(t, 1, rec.NumRows(), "expected 1 row")
 
 	schema := rec.Schema()
@@ -264,10 +268,20 @@ SELECT
 	assert.Equal(t, arrow.PrimitiveTypes.Float64,      schema.Field(3).Type, "double_col")
 	assert.Equal(t, arrow.FixedWidthTypes.Boolean,     schema.Field(4).Type, "bool_col")
 	assert.Equal(t, arrow.FixedWidthTypes.Date32,      schema.Field(5).Type, "date_col")
-	assert.Equal(t, arrow.FixedWidthTypes.Timestamp_us, schema.Field(6).Type, "ts_col")
+
+	// Timestamp types map to nanosecond timestamp arrays, with or without time zone
+	tsType := &arrow.TimestampType{Unit: arrow.Nanosecond}
+	tstzType := &arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: "UTC"}
+
+	assert.Equal(t, tsType, schema.Field(6).Type, "ts_3_col")
+	assert.Equal(t, tsType, schema.Field(7).Type, "ts_6_col")
+	assert.Equal(t, tsType, schema.Field(8).Type, "ts_9_col")
+	assert.Equal(t, tstzType, schema.Field(9).Type, "ts_tz_name_col")
+	assert.Equal(t, tstzType, schema.Field(10).Type, "ts_tz_offset_col")
+
 	// Nested types are stringified.
-	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(7).Type, "array_col")
-	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(8).Type, "map_col")
+	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(11).Type, "array_col")
+	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(12).Type, "map_col")
 
 	// Spot-check scalar values.
 	assert.Equal(t, "hello", rec.Column(0).(*array.String).Value(0))
@@ -276,9 +290,27 @@ SELECT
 	assert.InDelta(t, 3.14, rec.Column(3).(*array.Float64).Value(0), 1e-9)
 	assert.True(t, rec.Column(4).(*array.Boolean).Value(0))
 	assert.EqualValues(t, arrow.Date32(19737), rec.Column(5).(*array.Date32).Value(0), "date_col: days since epoch")
-	assert.EqualValues(t, arrow.Timestamp(1705321800123), rec.Column(6).(*array.Timestamp).Value(0), "ts_col: millis since epoch")
+
+	// 2024-01-15 12:30:00 UTC in nanoseconds since epoch:
+	// 19737 days * 86400 s/day = 1_705_276_800 s
+	// + 12*3600 + 30*60 = 45_000 s
+	// = 1_705_321_800 s total
+	const baseNs = int64(1_705_321_800) * 1_000_000_000
+
+	// Timestamps without time zone — stored as-is in nanoseconds.
+	assert.EqualValues(t, baseNs+123_000_000, rec.Column(6).(*array.Timestamp).Value(0), "ts_3_col")
+	assert.EqualValues(t, baseNs+123_456_000, rec.Column(7).(*array.Timestamp).Value(0), "ts_6_col")
+	assert.EqualValues(t, baseNs+123_456_789, rec.Column(8).(*array.Timestamp).Value(0), "ts_9_col")
+
+	// Timestamps with time zone — Athena normalizes to UTC before returning.
+	// 12:30:00.123 America/New_York (EST, UTC-5 in January) = 17:30:00.123 UTC
+	const estOffsetNs = 5 * 3600 * int64(1_000_000_000)
+	assert.EqualValues(t, baseNs+estOffsetNs+123_000_000, rec.Column(9).(*array.Timestamp).Value(0), "ts_tz_name_col")
+	// 12:30:00.123 +03:45 = 08:45:00.123 UTC (subtract 3h45m)
+	const plus0345Ns = (3*3600 + 45*60) * int64(1_000_000_000)
+	assert.EqualValues(t, baseNs-plus0345Ns+123_000_000, rec.Column(10).(*array.Timestamp).Value(0), "ts_tz_offset_col")
 
 	// Nested columns must be non-empty strings.
-	assert.NotEmpty(t, rec.Column(7).(*array.String).Value(0), "array_col should be non-empty")
-	assert.NotEmpty(t, rec.Column(8).(*array.String).Value(0), "map_col should be non-empty")
+	assert.NotEmpty(t, rec.Column(11).(*array.String).Value(0), "array_col should be non-empty")
+	assert.NotEmpty(t, rec.Column(12).(*array.String).Value(0), "map_col should be non-empty")
 }
