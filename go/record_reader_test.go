@@ -52,7 +52,7 @@ func TestAthenaTypeStringToArrow(t *testing.T) {
 		{"timestamp with time zone", arrow.FixedWidthTypes.Timestamp_us},
 		{"varbinary", arrow.BinaryTypes.Binary},
 		{"binary", arrow.BinaryTypes.Binary},
-		{"decimal(10,2)", arrow.BinaryTypes.String},
+		{"decimal", arrow.BinaryTypes.String},
 		{"array<int>", arrow.BinaryTypes.String},
 		{"unknown_type", arrow.BinaryTypes.String},
 	}
@@ -340,15 +340,6 @@ func TestBuildRecordBatch_AllTypes(t *testing.T) {
 			},
 		},
 		{
-			// decimal is stringified
-			"decimal(18,2)",
-			"123.45",
-			func(t *testing.T, col arrow.Array) {
-				require.Equal(t, arrow.BinaryTypes.String, col.DataType())
-				assert.Equal(t, "123.45", col.(*array.String).Value(0))
-			},
-		},
-		{
 			// array is stringified
 			"array<int>",
 			"[1, 2, 3]",
@@ -392,4 +383,21 @@ func TestBuildRecordBatch_AllTypes(t *testing.T) {
 			tt.check(t, batch.Column(0))
 		})
 	}
+
+	// Decimal requires Precision/Scale from ColumnInfo.
+	t.Run("decimal/123.45", func(t *testing.T) {
+		colInfo := []types.ColumnInfo{{Name: strPtr("col"), Type: strPtr("decimal"), Precision: 18, Scale: 2}}
+		rows := []types.Row{{Data: []types.Datum{{VarCharValue: strPtr("123.45")}}}}
+
+		schema := buildSchema(colInfo)
+		batch, err := buildRecordBatch(memory.DefaultAllocator, schema, rows)
+		require.NoError(t, err)
+		defer batch.Release()
+
+		require.EqualValues(t, 1, batch.NumRows())
+		col := batch.Column(0)
+		dt := &arrow.Decimal128Type{Precision: 18, Scale: 2}
+		require.Equal(t, dt, col.DataType())
+		assert.Equal(t, "123.45", col.(*array.Decimal128).Value(0).ToString(2))
+	})
 }

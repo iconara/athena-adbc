@@ -25,6 +25,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/decimal128"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/aws/aws-sdk-go-v2/service/athena/types"
 )
@@ -81,7 +82,11 @@ func athenaColumnTypeToArrow(col types.ColumnInfo) arrow.DataType {
 	if col.Type == nil {
 		return arrow.BinaryTypes.String
 	}
-	return athenaTypeStringToArrow(*col.Type)
+	t := *col.Type
+	if t == "decimal" {
+		return &arrow.Decimal128Type{Precision: col.Precision, Scale: col.Scale}
+	}
+	return athenaTypeStringToArrow(t)
 }
 
 // athenaTypeStringToArrow maps an Athena type string to an Arrow DataType.
@@ -110,7 +115,7 @@ func athenaTypeStringToArrow(t string) arrow.DataType {
 	case "varbinary", "binary":
 		return arrow.BinaryTypes.Binary
 	default:
-		// array, map, row, decimal, json — stringify
+		// array, map, row, json — stringify
 		return arrow.BinaryTypes.String
 	}
 }
@@ -214,6 +219,13 @@ func appendValue(bldr array.Builder, dt arrow.DataType, val string, isNull bool)
 			return err
 		}
 		bldr.(*array.BinaryBuilder).Append(b)
+	case arrow.DECIMAL128:
+		decType := dt.(*arrow.Decimal128Type)
+		n, err := decimal128.FromString(val, decType.Precision, decType.Scale)
+		if err != nil {
+			return err
+		}
+		bldr.(*array.Decimal128Builder).Append(n)
 	default:
 		// STRING covers varchar, string, char, decimal, array, map, row, json, etc.
 		bldr.(*array.StringBuilder).Append(val)
