@@ -325,7 +325,7 @@ func TestBuildRecordBatch_AllTypes(t *testing.T) {
 		},
 		{
 			"varbinary",
-			"hello",
+			"68 65 6c 6c 6f",
 			func(t *testing.T, col arrow.Array) {
 				require.Equal(t, arrow.BinaryTypes.Binary, col.DataType())
 				assert.Equal(t, []byte("hello"), col.(*array.Binary).Value(0))
@@ -333,7 +333,7 @@ func TestBuildRecordBatch_AllTypes(t *testing.T) {
 		},
 		{
 			"binary",
-			"world",
+			"77 6f 72 6c 64",
 			func(t *testing.T, col arrow.Array) {
 				require.Equal(t, arrow.BinaryTypes.Binary, col.DataType())
 				assert.Equal(t, []byte("world"), col.(*array.Binary).Value(0))

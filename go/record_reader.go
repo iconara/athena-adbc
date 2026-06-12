@@ -18,8 +18,10 @@
 package athena
 
 import (
+	"encoding/hex"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -207,7 +209,11 @@ func appendValue(bldr array.Builder, dt arrow.DataType, val string, isNull bool)
 		}
 		bldr.(*array.TimestampBuilder).Append(arrow.Timestamp(ms))
 	case arrow.BINARY:
-		bldr.(*array.BinaryBuilder).Append([]byte(val))
+		b, err := hex.DecodeString(strings.ReplaceAll(val, " ", ""))
+		if err != nil {
+			return err
+		}
+		bldr.(*array.BinaryBuilder).Append(b)
 	default:
 		// STRING covers varchar, string, char, decimal, array, map, row, json, etc.
 		bldr.(*array.StringBuilder).Append(val)
