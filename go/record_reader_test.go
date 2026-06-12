@@ -53,7 +53,7 @@ func TestAthenaTypeStringToArrow(t *testing.T) {
 		{"varbinary", arrow.BinaryTypes.Binary},
 		{"binary", arrow.BinaryTypes.Binary},
 		{"decimal", arrow.BinaryTypes.String},
-		{"array<int>", arrow.BinaryTypes.String},
+		{"array", arrow.BinaryTypes.String},
 		{"unknown_type", arrow.BinaryTypes.String},
 	}
 
@@ -405,7 +405,7 @@ func TestBuildRecordBatch_AllTypes(t *testing.T) {
 		},
 		{
 			// array is stringified
-			"array<int>",
+			"array",
 			"[1, 2, 3]",
 			func(t *testing.T, col arrow.Array) {
 				require.Equal(t, arrow.BinaryTypes.String, col.DataType())
@@ -414,7 +414,7 @@ func TestBuildRecordBatch_AllTypes(t *testing.T) {
 		},
 		{
 			// map is stringified
-			"map<varchar,int>",
+			"map",
 			"{a=1}",
 			func(t *testing.T, col arrow.Array) {
 				require.Equal(t, arrow.BinaryTypes.String, col.DataType())
