@@ -90,10 +90,6 @@ func (m *mockGlueClient) GetCatalogs(ctx context.Context, params *glueSDK.GetCat
 	return m.getCatalogsFn(ctx, params, optFns...)
 }
 
-func emptyGlueCatalogs(_ context.Context, _ *glueSDK.GetCatalogsInput, _ ...func(*glueSDK.Options)) (*glueSDK.GetCatalogsOutput, error) {
-	return &glueSDK.GetCatalogsOutput{}, nil
-}
-
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
@@ -389,12 +385,12 @@ func TestFunctional_MultiPageResults(t *testing.T) {
 func TestFunctional_GetTableSchema(t *testing.T) {
 	athenaMock := &mockAthenaClient{
 		getTableMetadataFn: func(_ context.Context, params *athenaSDK.GetTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetTableMetadataOutput, error) {
-			assert.Equal(t, "AwsDataCatalog", *params.CatalogName)
-			assert.Equal(t, "mydb", *params.DatabaseName)
-			assert.Equal(t, "mytable", *params.TableName)
+			assert.Equal(t, "my_catalog", *params.CatalogName)
+			assert.Equal(t, "my_db", *params.DatabaseName)
+			assert.Equal(t, "my_table", *params.TableName)
 			return &athenaSDK.GetTableMetadataOutput{
 				TableMetadata: &types.TableMetadata{
-					Name: strp("mytable"),
+					Name: strp("my_table"),
 					Columns: []types.Column{
 						{Name: strp("id"), Type: strp("bigint")},
 						{Name: strp("name"), Type: strp("varchar")},
@@ -406,8 +402,9 @@ func TestFunctional_GetTableSchema(t *testing.T) {
 	}
 
 	conn := newTestConn(t, athenaMock, nil)
-	dbSchema := "mydb"
-	schema, err := conn.GetTableSchema(context.Background(), nil, &dbSchema, "mytable")
+	catalogName := "my_catalog"
+	schemaName := "my_db"
+	schema, err := conn.GetTableSchema(context.Background(), &catalogName, &schemaName, "my_table")
 	require.NoError(t, err)
 	require.NotNil(t, schema)
 
@@ -429,15 +426,67 @@ func TestFunctional_ListCatalogs(t *testing.T) {
 			}, nil
 		},
 	}
-
-	glueMock := &mockGlueClient{getCatalogsFn: emptyGlueCatalogs}
-
+	glueMock := &mockGlueClient{
+		getCatalogsFn: func(_ context.Context, _ *glueSDK.GetCatalogsInput, _ ...func(*glueSDK.Options)) (*glueSDK.GetCatalogsOutput, error) {
+			return &glueSDK.GetCatalogsOutput{}, nil
+		},
+	}
+	
 	conn := newTestConn(t, athenaMock, glueMock)
-	conn.catalog = "" // force the paginator path rather than the shortcut
-
 	catalogs, err := conn.GetCatalogs(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"AwsDataCatalog", "MyGlueCatalog"}, catalogs)
+}
+
+// TestFunctional_ListCatalogs_RecursivelyListsGlueCatalogs verifies Glue GetCatalogs is called with the recursive option
+func TestFunctional_ListCatalogs_RecursivelyListsGlueCatalogs(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		listDataCatalogsFn: func(_ context.Context, _ *athenaSDK.ListDataCatalogsInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListDataCatalogsOutput, error) {
+			return &athenaSDK.ListDataCatalogsOutput{
+				DataCatalogsSummary: []types.DataCatalogSummary{
+					{CatalogName: strp("AwsDataCatalog")},
+					{CatalogName: strp("MyGlueCatalog")},
+				},
+			}, nil
+		},
+	}
+	glueMock := &mockGlueClient{
+		getCatalogsFn: func(_ context.Context, params *glueSDK.GetCatalogsInput, _ ...func(*glueSDK.Options)) (*glueSDK.GetCatalogsOutput, error) {
+			assert.True(t, params.Recursive, "Glue GetCatalogs should be called with the recursive option")
+			return &glueSDK.GetCatalogsOutput{
+				CatalogList: []glueTypes.Catalog{
+					{CatalogId: strp("111111111111:my_glue_catalog")},
+				},
+			}, nil
+		},
+	}
+	
+	conn := newTestConn(t, athenaMock, glueMock)
+	catalogs, err := conn.GetCatalogs(context.Background(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"AwsDataCatalog", "MyGlueCatalog", "my_glue_catalog"}, catalogs)
+}
+
+// TestFunctional_ListCatalogs_WithEmptyCatalogName verifies the GetCatalogs short circuits when given an empty string
+func TestFunctional_ListCatalogs_WithEmptyCatalogName(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		listDataCatalogsFn: func(_ context.Context, _ *athenaSDK.ListDataCatalogsInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListDataCatalogsOutput, error) {
+			t.Fatal("ListDataCatalogs should not be called")
+			return nil, nil
+		},
+	}
+	glueMock := &mockGlueClient{
+		getCatalogsFn: func(_ context.Context, _ *glueSDK.GetCatalogsInput, _ ...func(*glueSDK.Options)) (*glueSDK.GetCatalogsOutput, error) {
+			t.Fatal("GetCatalogs should not be called")
+			return nil, nil
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, glueMock)
+	emptyString := ""
+	catalogs, err := conn.GetCatalogs(context.Background(), &emptyString)
+	require.NoError(t, err)
+	assert.Equal(t, []string{}, catalogs)
 }
 
 // TestFunctional_ListSchemas verifies the ListDatabases pagination path.
@@ -460,6 +509,37 @@ func TestFunctional_ListSchemas(t *testing.T) {
 	assert.Equal(t, []string{"default", "analytics"}, schemas)
 }
 
+// TestFunctional_ListSchemas_WithEmptyCatalogName verifies GetDBSchemasForCatalog short circuits when the catalog name is empty
+func TestFunctional_ListSchemas_WithEmptyCatalogName(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		listDatabasesFn: func(_ context.Context, params *athenaSDK.ListDatabasesInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListDatabasesOutput, error) {
+			t.Fatal("ListDatabases should not be called")
+			return nil, nil
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, nil)
+	schemas, err := conn.GetDBSchemasForCatalog(context.Background(), "", nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{}, schemas)
+}
+
+// TestFunctional_ListSchemas_WithEmptySchemaName verifies GetDBSchemasForCatalog short circuits when the schema name is empty
+func TestFunctional_ListSchemas_WithEmptySchemaName(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		listDatabasesFn: func(_ context.Context, params *athenaSDK.ListDatabasesInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListDatabasesOutput, error) {
+			t.Fatal("ListDatabases should not be called")
+			return nil, nil
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, nil)
+	emptyString := ""
+	schemas, err := conn.GetDBSchemasForCatalog(context.Background(), "AwsDataCatalog", &emptyString)
+	require.NoError(t, err)
+	assert.Equal(t, []string{}, schemas)
+}
+
 // TestFunctional_ListSchemas_SkipsMetadataException verifies that
 // GetDBSchemasForCatalog returns an empty list (not an error) when
 // ListDatabases returns a MetadataException.
@@ -474,36 +554,4 @@ func TestFunctional_ListSchemas_SkipsMetadataException(t *testing.T) {
 	schemas, err := conn.GetDBSchemasForCatalog(context.Background(), "some_glue_catalog", nil)
 	require.NoError(t, err)
 	assert.Empty(t, schemas)
-}
-
-// TestFunctional_ListCatalogs_IncludesGlue verifies that GetCatalogs merges
-// results from both Athena ListDataCatalogs and Glue GetCatalogs.
-func TestFunctional_ListCatalogs_IncludesGlue(t *testing.T) {
-	athenaMock := &mockAthenaClient{
-		listDataCatalogsFn: func(_ context.Context, _ *athenaSDK.ListDataCatalogsInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListDataCatalogsOutput, error) {
-			return &athenaSDK.ListDataCatalogsOutput{
-				DataCatalogsSummary: []types.DataCatalogSummary{
-					{CatalogName: strp("AwsDataCatalog")},
-				},
-			}, nil
-		},
-	}
-
-	glueMock := &mockGlueClient{
-		getCatalogsFn: func(_ context.Context, params *glueSDK.GetCatalogsInput, _ ...func(*glueSDK.Options)) (*glueSDK.GetCatalogsOutput, error) {
-			assert.True(t, params.Recursive, "GetCatalogs should be called with Recursive=true")
-			return &glueSDK.GetCatalogsOutput{
-				CatalogList: []glueTypes.Catalog{
-					{CatalogId: strp("111111111111:my_glue_catalog")},
-				},
-			}, nil
-		},
-	}
-
-	conn := newTestConn(t, athenaMock, glueMock)
-	conn.catalog = ""
-
-	catalogs, err := conn.GetCatalogs(context.Background(), nil)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"AwsDataCatalog", "my_glue_catalog"}, catalogs)
 }

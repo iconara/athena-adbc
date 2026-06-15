@@ -59,23 +59,14 @@ func (c *connectionImpl) NewStatement() (adbc.Statement, error) {
 }
 
 // GetTableSchema uses Athena's GetTableMetadata API to return an Arrow schema.
-func (c *connectionImpl) GetTableSchema(ctx context.Context, catalog *string, dbSchema *string, tableName string) (*arrow.Schema, error) {
-	cat := c.catalog
-	if catalog != nil && *catalog != "" {
-		cat = *catalog
-	}
-	sch := c.schema
-	if dbSchema != nil && *dbSchema != "" {
-		sch = *dbSchema
-	}
-
-	if cat == "" {
+func (c *connectionImpl) GetTableSchema(ctx context.Context, catalogName *string, schemaName *string, tableName string) (*arrow.Schema, error) {
+	if catalogName == nil || *catalogName == "" {
 		return nil, adbc.Error{
 			Code: adbc.StatusInvalidArgument,
 			Msg:  "catalog is required for GetTableSchema",
 		}
 	}
-	if sch == "" {
+	if schemaName == nil || *schemaName == "" {
 		return nil, adbc.Error{
 			Code: adbc.StatusInvalidArgument,
 			Msg:  "schema is required for GetTableSchema",
@@ -83,8 +74,8 @@ func (c *connectionImpl) GetTableSchema(ctx context.Context, catalog *string, db
 	}
 
 	out, err := c.athenaClient.GetTableMetadata(ctx, &athenaSDK.GetTableMetadataInput{
-		CatalogName:  &cat,
-		DatabaseName: &sch,
+		CatalogName:  catalogName,
+		DatabaseName: schemaName,
 		TableName:    &tableName,
 	})
 	if err != nil {
@@ -136,11 +127,8 @@ func (c *connectionImpl) ListTableTypes(_ context.Context) ([]string, error) {
 // DbObjectsEnumerator interface implementation.
 
 func (c *connectionImpl) GetCatalogs(ctx context.Context, catalogFilter *string) ([]string, error) {
-	if c.catalog != "" {
-		if catalogFilter != nil && *catalogFilter != "" && c.catalog != *catalogFilter {
-			return nil, nil
-		}
-		return []string{c.catalog}, nil
+	if catalogFilter != nil && *catalogFilter == "" {
+		return []string{}, nil
 	}
 
 	catalogs, err := c.listAthenaCatalogs(ctx, catalogFilter)
@@ -211,6 +199,9 @@ func (c *connectionImpl) listGlueCatalogs(ctx context.Context, catalogFilter *st
 }
 
 func (c *connectionImpl) GetDBSchemasForCatalog(ctx context.Context, catalog string, schemaFilter *string) ([]string, error) {
+	if catalog == "" || (schemaFilter != nil && *schemaFilter == "") {
+		return []string{}, nil
+	}
 	input := &athenaSDK.ListDatabasesInput{
 		CatalogName: &catalog,
 	}
