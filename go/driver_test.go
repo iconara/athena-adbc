@@ -193,7 +193,7 @@ func integrationConn(t *testing.T) adbc.Connection {
 		athena.OptionAuthType:       athena.AuthTypeDefault,
 	}
 	if profile := os.Getenv("AWS_PROFILE"); profile != "" {
-		opts[athena.OptionAuthType]    = athena.AuthTypeProfile
+		opts[athena.OptionAuthType] = athena.AuthTypeProfile
 		opts[athena.OptionProfileName] = profile
 	}
 
@@ -267,23 +267,23 @@ SELECT
 	schema := rec.Schema()
 
 	decimalType := &arrow.Decimal128Type{Precision: 3, Scale: 2}
-	
+
 	// Scalar types map to their native Arrow types.
-	assert.Equal(t, arrow.BinaryTypes.String,          schema.Field(0).Type, "str_col")
-	assert.Equal(t, arrow.BinaryTypes.Binary,          schema.Field(1).Type, "bin_col")
-	assert.Equal(t, arrow.BinaryTypes.String,          schema.Field(2).Type, "null_col")
-	assert.Equal(t, arrow.PrimitiveTypes.Int64,        schema.Field(3).Type, "bigint_col")
-	assert.Equal(t, arrow.PrimitiveTypes.Int32,        schema.Field(4).Type, "int_col")
-	assert.Equal(t, arrow.PrimitiveTypes.Float32,      schema.Field(5).Type, "float_col")
-	assert.Equal(t, arrow.PrimitiveTypes.Float64,      schema.Field(6).Type, "double_col")
-	assert.Equal(t, decimalType,                       schema.Field(7).Type, "decimal_col")
-	assert.Equal(t, arrow.FixedWidthTypes.Boolean,     schema.Field(8).Type, "bool_col")
-	assert.Equal(t, arrow.FixedWidthTypes.Date32,      schema.Field(9).Type, "date_col")
+	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(0).Type, "str_col")
+	assert.Equal(t, arrow.BinaryTypes.Binary, schema.Field(1).Type, "bin_col")
+	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(2).Type, "null_col")
+	assert.Equal(t, arrow.PrimitiveTypes.Int64, schema.Field(3).Type, "bigint_col")
+	assert.Equal(t, arrow.PrimitiveTypes.Int32, schema.Field(4).Type, "int_col")
+	assert.Equal(t, arrow.PrimitiveTypes.Float32, schema.Field(5).Type, "float_col")
+	assert.Equal(t, arrow.PrimitiveTypes.Float64, schema.Field(6).Type, "double_col")
+	assert.Equal(t, decimalType, schema.Field(7).Type, "decimal_col")
+	assert.Equal(t, arrow.FixedWidthTypes.Boolean, schema.Field(8).Type, "bool_col")
+	assert.Equal(t, arrow.FixedWidthTypes.Date32, schema.Field(9).Type, "date_col")
 
 	// Timestamp types map to nanosecond timestamp arrays, with or without time zone
 	tsType := &arrow.TimestampType{Unit: arrow.Nanosecond}
 	tstzType := &arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: "UTC"}
-	
+
 	assert.Equal(t, tsType, schema.Field(10).Type, "ts_3_col")
 	assert.Equal(t, tsType, schema.Field(11).Type, "ts_6_col")
 	assert.Equal(t, tsType, schema.Field(12).Type, "ts_9_col")
