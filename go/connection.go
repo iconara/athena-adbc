@@ -233,12 +233,17 @@ func (c *connectionImpl) GetDBSchemasForCatalog(ctx context.Context, catalog str
 	return schemas, nil
 }
 
-func (c *connectionImpl) GetTablesForDBSchema(ctx context.Context, catalog string, schema string, tableFilter *string, _ *string, includeColumns bool) ([]driverbase.TableInfo, error) {
+func (c *connectionImpl) GetTablesForDBSchema(ctx context.Context, catalogName string, schemaName string, tableFilter *string, _ *string, includeColumns bool) ([]driverbase.TableInfo, error) {
 	input := &athenaSDK.ListTableMetadataInput{
-		CatalogName:  &catalog,
-		DatabaseName: &schema,
+		CatalogName:  &catalogName,
+		DatabaseName: &schemaName,
 	}
-	if tableFilter != nil && *tableFilter != "" {
+	if tableFilter == nil {
+		matchAll := ".*"
+		input.Expression = &matchAll
+	} else if *tableFilter == "" {
+		return []driverbase.TableInfo{}, nil
+	} else {
 		input.Expression = tableFilter
 	}
 

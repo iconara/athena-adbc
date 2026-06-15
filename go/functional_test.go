@@ -431,7 +431,7 @@ func TestFunctional_ListCatalogs(t *testing.T) {
 			return &glueSDK.GetCatalogsOutput{}, nil
 		},
 	}
-	
+
 	conn := newTestConn(t, athenaMock, glueMock)
 	catalogs, err := conn.GetCatalogs(context.Background(), nil)
 	require.NoError(t, err)
@@ -460,7 +460,7 @@ func TestFunctional_ListCatalogs_RecursivelyListsGlueCatalogs(t *testing.T) {
 			}, nil
 		},
 	}
-	
+
 	conn := newTestConn(t, athenaMock, glueMock)
 	catalogs, err := conn.GetCatalogs(context.Background(), nil)
 	require.NoError(t, err)
@@ -554,4 +554,164 @@ func TestFunctional_ListSchemas_SkipsMetadataException(t *testing.T) {
 	schemas, err := conn.GetDBSchemasForCatalog(context.Background(), "some_glue_catalog", nil)
 	require.NoError(t, err)
 	assert.Empty(t, schemas)
+}
+
+// TestFunctional_GetTablesForDBSchema verifies the happy path: parameters are
+// forwarded correctly and returned tables are mapped to TableInfo.
+func TestFunctional_GetTablesForDBSchema(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		listTableMetadataFn: func(_ context.Context, params *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
+			assert.Equal(t, "cat", *params.CatalogName)
+			assert.Equal(t, "db", *params.DatabaseName)
+			assert.Equal(t, "tbl", *params.Expression)
+			return &athenaSDK.ListTableMetadataOutput{
+				TableMetadataList: []types.TableMetadata{
+					{
+						Name:      strp("tbl"),
+						TableType: strp("EXTERNAL_TABLE"),
+					},
+				},
+			}, nil
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, nil)
+	tableFilter := "tbl"
+	tables, err := conn.GetTablesForDBSchema(context.Background(), "cat", "db", &tableFilter, nil, false)
+	require.NoError(t, err)
+	require.Len(t, tables, 1)
+
+	assert.Equal(t, "tbl", tables[0].TableName)
+	assert.Equal(t, "EXTERNAL_TABLE", tables[0].TableType)
+	assert.Empty(t, tables[0].TableColumns)
+}
+
+// TestFunctional_GetTablesForDBSchema_WithColumns verifies that column metadata
+// is populated when includeColumns is true.
+func TestFunctional_GetTablesForDBSchema_WithColumns(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		listTableMetadataFn: func(_ context.Context, _ *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
+			return &athenaSDK.ListTableMetadataOutput{
+				TableMetadataList: []types.TableMetadata{
+					{
+						Name:      strp("events"),
+						TableType: strp("EXTERNAL_TABLE"),
+						Columns: []types.Column{
+							{Name: strp("event_id"), Type: strp("bigint")},
+							{Name: strp("event_name"), Type: strp("varchar")},
+							{Name: strp("created_at"), Type: strp("timestamp")},
+						},
+					},
+				},
+			}, nil
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, nil)
+	tables, err := conn.GetTablesForDBSchema(context.Background(), "cat", "db", nil, nil, true)
+	require.NoError(t, err)
+	require.Len(t, tables, 1)
+	require.Len(t, tables[0].TableColumns, 3)
+
+	col0 := tables[0].TableColumns[0]
+	assert.Equal(t, "event_id", col0.ColumnName)
+	assert.Equal(t, int32(1), *col0.OrdinalPosition)
+	assert.Equal(t, "bigint", *col0.XdbcTypeName)
+
+	col2 := tables[0].TableColumns[2]
+	assert.Equal(t, "created_at", col2.ColumnName)
+	assert.Equal(t, int32(3), *col2.OrdinalPosition)
+	assert.Equal(t, "timestamp", *col2.XdbcTypeName)
+}
+
+// TestFunctional_GetTablesForDBSchema_NilTableFilter verifies that Expression
+// is not set when tableFilter is nil.
+func TestFunctional_GetTablesForDBSchema_NilTableFilter(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		listTableMetadataFn: func(_ context.Context, params *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
+			assert.Equal(t, strp(".*"), params.Expression)
+			return &athenaSDK.ListTableMetadataOutput{}, nil
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, nil)
+	tables, err := conn.GetTablesForDBSchema(context.Background(), "cat", "db", nil, nil, false)
+	require.NoError(t, err)
+	assert.Empty(t, tables)
+}
+
+// TestFunctional_GetTablesForDBSchema_EmptyTableFilter verifies that GetTablesForDBSchema
+// short circuits when the table name filter is an empty string
+func TestFunctional_GetTablesForDBSchema_EmptyTableFilter(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		listTableMetadataFn: func(_ context.Context, params *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
+			t.Fatal("ListTableMetadata should not be called")
+			return &athenaSDK.ListTableMetadataOutput{}, nil
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, nil)
+	empty := ""
+	tables, err := conn.GetTablesForDBSchema(context.Background(), "cat", "db", &empty, nil, false)
+	require.NoError(t, err)
+	assert.Empty(t, tables)
+}
+
+// TestFunctional_GetTablesForDBSchema_SkipsNilName verifies that table entries
+// with a nil Name are skipped.
+func TestFunctional_GetTablesForDBSchema_SkipsNilName(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		listTableMetadataFn: func(_ context.Context, _ *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
+			return &athenaSDK.ListTableMetadataOutput{
+				TableMetadataList: []types.TableMetadata{
+					{Name: nil, TableType: strp("EXTERNAL_TABLE")},
+					{Name: strp("valid_table"), TableType: strp("EXTERNAL_TABLE")},
+				},
+			}, nil
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, nil)
+	tables, err := conn.GetTablesForDBSchema(context.Background(), "cat", "db", nil, nil, false)
+	require.NoError(t, err)
+	require.Len(t, tables, 1)
+	assert.Equal(t, "valid_table", tables[0].TableName)
+}
+
+// TestFunctional_GetTablesForDBSchema_DefaultsTableType verifies that tables
+// with nil TableType default to "EXTERNAL_TABLE".
+func TestFunctional_GetTablesForDBSchema_DefaultsTableType(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		listTableMetadataFn: func(_ context.Context, _ *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
+			return &athenaSDK.ListTableMetadataOutput{
+				TableMetadataList: []types.TableMetadata{
+					{Name: strp("my_table"), TableType: nil},
+				},
+			}, nil
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, nil)
+	tables, err := conn.GetTablesForDBSchema(context.Background(), "cat", "db", nil, nil, false)
+	require.NoError(t, err)
+	require.Len(t, tables, 1)
+	assert.Equal(t, "EXTERNAL_TABLE", tables[0].TableType)
+}
+
+// TestFunctional_GetTablesForDBSchema_APIError verifies that a ListTableMetadata
+// error is wrapped as an adbc.Error with StatusIO.
+func TestFunctional_GetTablesForDBSchema_APIError(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		listTableMetadataFn: func(_ context.Context, _ *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
+			return nil, fmt.Errorf("throttled")
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, nil)
+	_, err := conn.GetTablesForDBSchema(context.Background(), "cat", "db", nil, nil, false)
+	require.Error(t, err)
+	var adbcErr adbc.Error
+	require.ErrorAs(t, err, &adbcErr)
+	assert.Equal(t, adbc.StatusIO, adbcErr.Code)
+	assert.Contains(t, adbcErr.Msg, "ListTableMetadata failed")
 }
