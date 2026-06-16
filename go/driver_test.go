@@ -19,6 +19,8 @@ package athena_test
 
 import (
 	"context"
+	"fmt"
+	"math/rand"
 	"os"
 	"testing"
 
@@ -26,10 +28,15 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	glueSDK "github.com/aws/aws-sdk-go-v2/service/glue"
+	glueTypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
 	athena "github.com/dbt-labs/athena/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func strPtr(s string) *string { return &s }
 
 // getSetOptions is a helper to cast adbc.Database to adbc.GetSetOptions.
 func getSetOptions(t *testing.T, db adbc.Database) adbc.GetSetOptions {
@@ -161,39 +168,158 @@ func TestAllOptionConstants(t *testing.T) {
 	assert.Equal(t, "athena.aws.profile", athena.OptionProfileName)
 }
 
-// integrationConn opens a real Athena connection from environment variables and
-// registers cleanup. Skips the test if ADBC_ATHENA_TESTS is unset.
+// ---------------------------------------------------------------------------
+// Integration tests
+// ---------------------------------------------------------------------------
+
+var testRegion string
+var testCatalogName string
+var testSchemaName string
+
+func skipIntegrationTests() bool {
+	return os.Getenv("ADBC_ATHENA_TESTS") == ""
+}
+
+func TestMain(m *testing.M) {
+	if skipIntegrationTests() {
+		os.Exit(m.Run())
+	}
+
+	testRegion = os.Getenv("AWS_DEFAULT_REGION")
+	if testRegion == "" {
+		testRegion = "us-east-1"
+	}
+
+	testCatalogName = os.Getenv("ATHENA_CATALOG")
+	if testCatalogName == "" {
+		testCatalogName = "AwsDataCatalog"
+	}
+
+	testSchemaName = os.Getenv("ATHENA_SCHEMA")
+	createSchema := false
+	if testSchemaName == "" {
+		testSchemaName = fmt.Sprintf("athena_adbc_test_%06d", rand.Intn(1_000_000))
+		createSchema = true
+	}
+
+	glueClient := createGlueClient(testRegion)
+	setupTestCatalog(glueClient, testSchemaName, createSchema)
+
+	code := m.Run()
+
+	teardownTestCatalog(glueClient, testSchemaName, createSchema)
+	os.Exit(code)
+}
+
+func createGlueClient(region string) *glueSDK.Client {
+	cfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(region))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load AWS config: %v\n", err)
+		os.Exit(1)
+	}
+	return glueSDK.NewFromConfig(cfg)
+}
+
+func setupTestCatalog(glueClient *glueSDK.Client, schemaName string, createSchema bool) {
+	ctx := context.Background()
+
+	if createSchema {
+		_, err := glueClient.CreateDatabase(ctx, &glueSDK.CreateDatabaseInput{
+			DatabaseInput: &glueTypes.DatabaseInput{
+				Name: &schemaName,
+			},
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to create database %s: %v\n", schemaName, err)
+			os.Exit(1)
+		}
+	}
+
+	tables := []struct {
+		name    string
+		columns []glueTypes.Column
+	}{
+		{
+			name: "test_table_1",
+			columns: []glueTypes.Column{
+				{Name: strPtr("id"), Type: strPtr("bigint")},
+				{Name: strPtr("name"), Type: strPtr("string")},
+				{Name: strPtr("created_at"), Type: strPtr("timestamp")},
+			},
+		},
+		{
+			name: "test_table_2",
+			columns: []glueTypes.Column{
+				{Name: strPtr("user_id"), Type: strPtr("bigint")},
+				{Name: strPtr("score"), Type: strPtr("double")},
+				{Name: strPtr("active"), Type: strPtr("boolean")},
+				{Name: strPtr("updated_at"), Type: strPtr("timestamp")},
+			},
+		},
+		{
+			name: "another_table",
+			columns: []glueTypes.Column{
+				{Name: strPtr("key"), Type: strPtr("string")},
+				{Name: strPtr("value"), Type: strPtr("string")},
+			},
+		},
+	}
+
+	for _, tbl := range tables {
+		_, err := glueClient.CreateTable(ctx, &glueSDK.CreateTableInput{
+			DatabaseName: &schemaName,
+			TableInput: &glueTypes.TableInput{
+				Name:      strPtr(tbl.name),
+				TableType: strPtr("EXTERNAL_TABLE"),
+				StorageDescriptor: &glueTypes.StorageDescriptor{
+					Columns: tbl.columns,
+				},
+			},
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to create table %s: %v\n", tbl.name, err)
+			os.Exit(1)
+		}
+	}
+}
+
+func teardownTestCatalog(glueClient *glueSDK.Client, schemaName string, deleteSchema bool) {
+	ctx := context.Background()
+	tableNames := []string{"test_table_1", "test_table_2", "another_table"}
+
+	for _, name := range tableNames {
+		glueClient.DeleteTable(ctx, &glueSDK.DeleteTableInput{
+			DatabaseName: &schemaName,
+			Name:         strPtr(name),
+		})
+	}
+	if deleteSchema {
+		glueClient.DeleteDatabase(ctx, &glueSDK.DeleteDatabaseInput{
+			Name: &schemaName,
+		})
+	}
+}
+
+// integrationConn opens a real Athena connection and registers cleanup. Calls
+// setupCatalog to ensure test tables exist, then uses catalogSchema as the
+// default database. Skips the test if ADBC_ATHENA_TESTS is unset.
 func integrationConn(t *testing.T) adbc.Connection {
 	t.Helper()
-	if os.Getenv("ADBC_ATHENA_TESTS") == "" {
+	if skipIntegrationTests() {
 		t.Skip("set ADBC_ATHENA_TESTS=1 to run integration tests")
 	}
 
-	region := os.Getenv("AWS_DEFAULT_REGION")
-	if region == "" {
-		region = "us-east-1"
-	}
 	outputLocation := os.Getenv("ATHENA_OUTPUT_LOCATION")
-	// require.NotEmpty(t, outputLocation, "ATHENA_OUTPUT_LOCATION must be set for integration tests")
-
-	catalog := os.Getenv("ATHENA_CATALOG")
-	if catalog == "" {
-		catalog = "AwsDataCatalog"
-	}
-	schema := os.Getenv("ATHENA_SCHEMA")
-	if schema == "" {
-		schema = "default"
-	}
 
 	opts := map[string]string{
-		athena.OptionRegion:         region,
+		athena.OptionRegion:         testRegion,
 		athena.OptionOutputLocation: outputLocation,
-		athena.OptionCatalog:        catalog,
-		athena.OptionSchema:         schema,
+		athena.OptionCatalog:        testCatalogName,
+		athena.OptionSchema:         testSchemaName,
 		athena.OptionAuthType:       athena.AuthTypeDefault,
 	}
 	if profile := os.Getenv("AWS_PROFILE"); profile != "" {
-		opts[athena.OptionAuthType]    = athena.AuthTypeProfile
+		opts[athena.OptionAuthType] = athena.AuthTypeProfile
 		opts[athena.OptionProfileName] = profile
 	}
 
@@ -283,26 +409,98 @@ SELECT
 	assert.NotEmpty(t, rec.Column(8).(*array.String).Value(0), "map_col should be non-empty")
 }
 
-func TestIntegration_ListCatalogs(t *testing.T) {
-	conn := integrationConn(t)
-
+func listCatalogs(t *testing.T, conn adbc.Connection, catalogName *string) []string {
 	rdr, err := conn.GetObjects(
 		context.Background(),
 		adbc.ObjectDepthCatalogs,
-		nil, nil, nil, nil, nil,
+		catalogName, nil, nil, nil, nil,
 	)
 	require.NoError(t, err)
 	defer rdr.Release()
 
-	var catalogs []string
+	var catalogNames []string
 	for rdr.Next() {
 		rec := rdr.RecordBatch()
 		col := rec.Column(0).(*array.String)
 		for i := 0; i < col.Len(); i++ {
-			catalogs = append(catalogs, col.Value(i))
+			catalogNames = append(catalogNames, col.Value(i))
 		}
 	}
 	require.NoError(t, rdr.Err())
 
-	assert.Contains(t, catalogs, "AwsDataCatalog")
+	return catalogNames
+}
+
+func TestIntegration_ListCatalogs(t *testing.T) {
+	conn := integrationConn(t)
+	catalogNames := listCatalogs(t, conn, nil)
+	assert.Contains(t, catalogNames, "AwsDataCatalog")
+}
+
+func listSchemas(t *testing.T, conn adbc.Connection, catalogName *string, schemaName *string) []string {
+	rdr, err := conn.GetObjects(
+		context.Background(),
+		adbc.ObjectDepthDBSchemas,
+		strPtr("AwsDataCatalog"), nil, nil, nil, nil,
+	)
+	require.NoError(t, err)
+	defer rdr.Release()
+
+	var schemaNames []string
+	for rdr.Next() {
+		rec := rdr.RecordBatch()
+		dbSchemasList := rec.Column(1).(*array.List)
+		dbSchemasStruct := dbSchemasList.ListValues().(*array.Struct)
+		nameCol := dbSchemasStruct.Field(0).(*array.String)
+		for i := 0; i < nameCol.Len(); i++ {
+			schemaNames = append(schemaNames, nameCol.Value(i))
+		}
+	}
+	require.NoError(t, rdr.Err())
+
+	return schemaNames
+}
+
+func TestIntegration_ListSchemas(t *testing.T) {
+	conn := integrationConn(t)
+	schemaNames := listSchemas(t, conn, strPtr("AwsDataCatalog"), nil)
+	assert.Contains(t, schemaNames, testSchemaName)
+}
+
+func listTables(t *testing.T, conn adbc.Connection, catalogName *string, schemaName *string, tableName *string) []string {
+	rdr, err := conn.GetObjects(
+		context.Background(),
+		adbc.ObjectDepthTables,
+		catalogName, schemaName, tableName, nil, nil,
+	)
+	require.NoError(t, err)
+	defer rdr.Release()
+
+	var tableNames []string
+	for rdr.Next() {
+		rec := rdr.RecordBatch()
+		dbSchemasList := rec.Column(1).(*array.List)
+		dbSchemasStruct := dbSchemasList.ListValues().(*array.Struct)
+		tablesList := dbSchemasStruct.Field(1).(*array.List)
+		tablesStruct := tablesList.ListValues().(*array.Struct)
+		nameCol := tablesStruct.Field(0).(*array.String)
+		for i := 0; i < nameCol.Len(); i++ {
+			tableNames = append(tableNames, nameCol.Value(i))
+		}
+	}
+	require.NoError(t, rdr.Err())
+
+	return tableNames
+}
+
+func TestIntegration_ListTables(t *testing.T) {
+	conn := integrationConn(t)
+	tableNames := listTables(t, conn, strPtr("AwsDataCatalog"), &testSchemaName, nil)
+	assert.Equal(t, []string{"another_table", "test_table_1", "test_table_2"}, tableNames)
+}
+
+func TestIntegration_ListTables_WithWildcards(t *testing.T) {
+	conn := integrationConn(t)
+	tableNames := listTables(t, conn, strPtr("AwsDataCatalog"), &testSchemaName, strPtr("test%"))
+	assert.Equal(t, []string{"test_table_1", "test_table_2"}, tableNames)
 }
