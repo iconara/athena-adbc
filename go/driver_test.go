@@ -409,11 +409,11 @@ SELECT
 	assert.NotEmpty(t, rec.Column(8).(*array.String).Value(0), "map_col should be non-empty")
 }
 
-func listCatalogs(t *testing.T, conn adbc.Connection, catalogName *string) []string {
+func listCatalogs(t *testing.T, conn adbc.Connection, catalogFilter *string) []string {
 	rdr, err := conn.GetObjects(
 		context.Background(),
 		adbc.ObjectDepthCatalogs,
-		catalogName, nil, nil, nil, nil,
+		catalogFilter, nil, nil, nil, nil,
 	)
 	require.NoError(t, err)
 	defer rdr.Release()
@@ -437,11 +437,19 @@ func TestIntegration_ListCatalogs(t *testing.T) {
 	assert.Contains(t, catalogNames, "AwsDataCatalog")
 }
 
-func listSchemas(t *testing.T, conn adbc.Connection, catalogName *string, schemaName *string) []string {
+func TestIntegration_ListCatalogs_WithWildcard(t *testing.T) {
+	conn := integrationConn(t)
+	catalogNames := listCatalogs(t, conn, strPtr("Aws%Catalog"))
+	assert.Equal(t, []string{"AwsDataCatalog"}, catalogNames)
+	catalogNames = listCatalogs(t, conn, strPtr("_wsDataCatalo_"))
+	assert.Equal(t, []string{"AwsDataCatalog"}, catalogNames)
+}
+
+func listSchemas(t *testing.T, conn adbc.Connection, catalogFilter *string, schemaFilter *string) []string {
 	rdr, err := conn.GetObjects(
 		context.Background(),
 		adbc.ObjectDepthDBSchemas,
-		strPtr("AwsDataCatalog"), nil, nil, nil, nil,
+		catalogFilter, schemaFilter, nil, nil, nil,
 	)
 	require.NoError(t, err)
 	defer rdr.Release()
@@ -465,6 +473,15 @@ func TestIntegration_ListSchemas(t *testing.T) {
 	conn := integrationConn(t)
 	schemaNames := listSchemas(t, conn, strPtr("AwsDataCatalog"), nil)
 	assert.Contains(t, schemaNames, testSchemaName)
+}
+
+func TestIntegration_ListSchemas_WithWildcards(t *testing.T) {
+	conn := integrationConn(t)
+	schemaFilter := testSchemaName[:len(testSchemaName)-3] + "%"
+	schemaNames := listSchemas(t, conn, strPtr("AwsDat_Catalog"), &schemaFilter)
+	assert.Contains(t, schemaNames, testSchemaName)
+	schemaNames = listSchemas(t, conn, strPtr("AwsDataCatalog"), strPtr("no\\_such\\_schema"))
+	assert.NotContains(t, schemaNames, testSchemaName)
 }
 
 func listTables(t *testing.T, conn adbc.Connection, catalogName *string, schemaName *string, tableName *string) []string {
@@ -501,6 +518,7 @@ func TestIntegration_ListTables(t *testing.T) {
 
 func TestIntegration_ListTables_WithWildcards(t *testing.T) {
 	conn := integrationConn(t)
-	tableNames := listTables(t, conn, strPtr("AwsDataCatalog"), &testSchemaName, strPtr("test%"))
+	schemaFilter := testSchemaName[:len(testSchemaName)-3] + "%"
+	tableNames := listTables(t, conn, strPtr("AwsDataCatalog"), &schemaFilter, strPtr("test%"))
 	assert.Equal(t, []string{"test_table_1", "test_table_2"}, tableNames)
 }

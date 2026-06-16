@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/adbc-drivers/driverbase-go/driverbase"
@@ -131,12 +132,19 @@ func (c *connectionImpl) GetCatalogs(ctx context.Context, catalogFilter *string)
 		return []string{}, nil
 	}
 
-	catalogs, err := c.listAthenaCatalogs(ctx, catalogFilter)
+	catalogPattern, err := driverbase.PatternToRegexp(catalogFilter)
+	if err != nil {
+		return nil, err
+	} else if catalogPattern == nil {
+		catalogPattern = regexp.MustCompile("^.*$")
+	}
+
+	catalogs, err := c.listAthenaCatalogs(ctx, catalogPattern)
 	if err != nil {
 		return nil, err
 	}
 
-	glueCatalogs, err := c.listGlueCatalogs(ctx, catalogFilter)
+	glueCatalogs, err := c.listGlueCatalogs(ctx, catalogPattern)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +153,7 @@ func (c *connectionImpl) GetCatalogs(ctx context.Context, catalogFilter *string)
 	return catalogs, nil
 }
 
-func (c *connectionImpl) listAthenaCatalogs(ctx context.Context, catalogFilter *string) ([]string, error) {
+func (c *connectionImpl) listAthenaCatalogs(ctx context.Context, catalogPattern *regexp.Regexp) ([]string, error) {
 	listInput := &athenaSDK.ListDataCatalogsInput{}
 	paginator := athenaSDK.NewListDataCatalogsPaginator(c.athenaClient, listInput)
 
@@ -159,19 +167,15 @@ func (c *connectionImpl) listAthenaCatalogs(ctx context.Context, catalogFilter *
 			}
 		}
 		for _, dc := range page.DataCatalogsSummary {
-			if dc.CatalogName == nil {
-				continue
+			if dc.CatalogName != nil && catalogPattern.MatchString(*dc.CatalogName) {
+				catalogs = append(catalogs, *dc.CatalogName)
 			}
-			if catalogFilter != nil && *catalogFilter != "" && *dc.CatalogName != *catalogFilter {
-				continue
-			}
-			catalogs = append(catalogs, *dc.CatalogName)
 		}
 	}
 	return catalogs, nil
 }
 
-func (c *connectionImpl) listGlueCatalogs(ctx context.Context, catalogFilter *string) ([]string, error) {
+func (c *connectionImpl) listGlueCatalogs(ctx context.Context, catalogPattern *regexp.Regexp) ([]string, error) {
 	glueInput := &glueSDK.GetCatalogsInput{Recursive: true}
 	glueOut, err := c.glueClient.GetCatalogs(ctx, glueInput)
 	if err != nil {
@@ -190,10 +194,9 @@ func (c *connectionImpl) listGlueCatalogs(ctx context.Context, catalogFilter *st
 		if _, after, ok := strings.Cut(name, ":"); ok {
 			name = after
 		}
-		if catalogFilter != nil && *catalogFilter != "" && name != *catalogFilter {
-			continue
+		if catalogPattern.MatchString(name) {
+			catalogs = append(catalogs, name)
 		}
-		catalogs = append(catalogs, name)
 	}
 	return catalogs, nil
 }
@@ -201,6 +204,12 @@ func (c *connectionImpl) listGlueCatalogs(ctx context.Context, catalogFilter *st
 func (c *connectionImpl) GetDBSchemasForCatalog(ctx context.Context, catalog string, schemaFilter *string) ([]string, error) {
 	if catalog == "" || (schemaFilter != nil && *schemaFilter == "") {
 		return []string{}, nil
+	}
+	schemaPattern, err := driverbase.PatternToRegexp(schemaFilter)
+	if err != nil {
+		return nil, err
+	} else if schemaPattern == nil {
+		schemaPattern = regexp.MustCompile("^.*$")
 	}
 	input := &athenaSDK.ListDatabasesInput{
 		CatalogName: &catalog,
@@ -221,13 +230,9 @@ func (c *connectionImpl) GetDBSchemasForCatalog(ctx context.Context, catalog str
 			}
 		}
 		for _, db := range page.DatabaseList {
-			if db.Name == nil {
-				continue
+			if db.Name != nil && schemaPattern.MatchString(*db.Name) {
+				schemas = append(schemas, *db.Name)
 			}
-			if schemaFilter != nil && *schemaFilter != "" && *db.Name != *schemaFilter {
-				continue
-			}
-			schemas = append(schemas, *db.Name)
 		}
 	}
 	return schemas, nil

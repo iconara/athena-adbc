@@ -490,6 +490,36 @@ func TestFunctional_ListCatalogs_WithEmptyCatalogName(t *testing.T) {
 	assert.Equal(t, []string{}, catalogs)
 }
 
+// TestFunctional_ListCatalogs_WithFilter verifies the catalogs are filtered by the specified pattern
+func TestFunctional_ListCatalogs_WithFilter(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		listDataCatalogsFn: func(_ context.Context, _ *athenaSDK.ListDataCatalogsInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListDataCatalogsOutput, error) {
+			return &athenaSDK.ListDataCatalogsOutput{
+				DataCatalogsSummary: []types.DataCatalogSummary{
+					{CatalogName: strp("AwsDataCatalog")},
+					{CatalogName: strp("MyGlueCatalog")},
+				},
+			}, nil
+		},
+	}
+	glueMock := &mockGlueClient{
+		getCatalogsFn: func(_ context.Context, params *glueSDK.GetCatalogsInput, _ ...func(*glueSDK.Options)) (*glueSDK.GetCatalogsOutput, error) {
+			assert.True(t, params.Recursive, "Glue GetCatalogs should be called with the recursive option")
+			return &glueSDK.GetCatalogsOutput{
+				CatalogList: []glueTypes.Catalog{
+					{CatalogId: strp("111111111111:my_glue_catalog")},
+					{CatalogId: strp("222222222222:another_glue_catalog")},
+				},
+			}, nil
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, glueMock)
+	catalogs, err := conn.GetCatalogs(context.Background(), strp("my%"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"MyGlueCatalog", "my_glue_catalog"}, catalogs)
+}
+
 // TestFunctional_ListSchemas verifies the ListDatabases pagination path.
 func TestFunctional_ListSchemas(t *testing.T) {
 	athenaMock := &mockAthenaClient{
@@ -539,6 +569,28 @@ func TestFunctional_ListSchemas_WithEmptySchemaName(t *testing.T) {
 	schemas, err := conn.GetDBSchemasForCatalog(context.Background(), "AwsDataCatalog", &emptyString)
 	require.NoError(t, err)
 	assert.Equal(t, []string{}, schemas)
+}
+
+// TestFunctional_ListSchemas_WithFilter verifies the schemas are filtered by the specified pattern
+func TestFunctional_ListSchemas_WithFilter(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		listDatabasesFn: func(_ context.Context, params *athenaSDK.ListDatabasesInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListDatabasesOutput, error) {
+			assert.Equal(t, "AwsDataCatalog", *params.CatalogName)
+			return &athenaSDK.ListDatabasesOutput{
+				DatabaseList: []types.Database{
+					{Name: strp("default")},
+					{Name: strp("analytics")},
+					{Name: strp("another_schema")},
+					{Name: strp("schema_four")},
+				},
+			}, nil
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, nil)
+	schemas, err := conn.GetDBSchemasForCatalog(context.Background(), "AwsDataCatalog", strp("%schema%"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"another_schema", "schema_four"}, schemas)
 }
 
 // TestFunctional_ListSchemas_SkipsMetadataException verifies that
