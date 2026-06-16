@@ -20,6 +20,7 @@ package athena
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync/atomic"
 	"testing"
 
@@ -638,6 +639,62 @@ func TestFunctional_GetTablesForDBSchema_NilTableFilter(t *testing.T) {
 	tables, err := conn.GetTablesForDBSchema(context.Background(), "cat", "db", nil, nil, false)
 	require.NoError(t, err)
 	assert.Empty(t, tables)
+}
+
+// TestFunctional_GetTablesForDBSchema_Patterns verifies that underscores and percent in the table are translated into regular expression syntax
+func TestFunctional_GetTablesForDBSchema_Patterns(t *testing.T) {
+	examples := map[string]string{
+		"my_table":         "my.table",
+		"my\\_table":       "my_table",
+		"my\\\\_table":     "my\\\\.table",
+		"my\\\\\\\\_table": "my\\\\\\\\.table",
+		"_t":               ".t",
+		"table_":           "table.",
+		"my______table":    "my......table",
+		"__table":          "..table",
+		"table____":        "table....",
+		"table%":           "table.*",
+		"%table%":          ".*table.*",
+		"%table":           ".*table",
+		"my%table":         "my.*table",
+		"my%%table":        "my.*table",
+		"my\\%table":       "my%table",
+		"my\\\\%table":     "my\\\\.*table",
+		"my\\\\\\%table":   "my\\\\%table",
+		"my\\\\\\\\%table": "my\\\\\\\\.*table",
+		"table%%%%":        "table.*",
+		"%%%%%%table":      ".*table",
+		"table?":           "table\\?",
+		"+able":            "\\+able",
+		"t..le":            "t\\.\\.le",
+		"my<[{table}]>":    "my\\<\\[\\{table\\}\\]\\>",
+		"my|=-!$*^table":   "my\\|\\=\\-\\!\\$\\*\\^table",
+	}
+	tableFilters := make([]string, 0)
+	for tableFilter, _ := range examples {
+		tableFilters = append(tableFilters, tableFilter)
+	}
+	sort.Strings(tableFilters)
+	capturedExpressions := make([]string, 0)
+
+	athenaMock := &mockAthenaClient{
+		listTableMetadataFn: func(_ context.Context, params *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
+			capturedExpressions = append(capturedExpressions, *params.Expression)
+			return &athenaSDK.ListTableMetadataOutput{}, nil
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, nil)
+	for _, tableFilter := range tableFilters {
+		conn.GetTablesForDBSchema(context.Background(), "cat", "db", &tableFilter, nil, false)
+	}
+	for i, tableFilter := range tableFilters {
+		assert.Equal(t, examples[tableFilter], capturedExpressions[i],
+			fmt.Sprintf("Expected \"%s\" to be transformed to \"%s\" but got \"%s\"",
+				tableFilter,
+				examples[tableFilter],
+				capturedExpressions[i]))
+	}
 }
 
 // TestFunctional_GetTablesForDBSchema_EmptyTableFilter verifies that GetTablesForDBSchema

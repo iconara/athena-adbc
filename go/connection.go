@@ -238,13 +238,11 @@ func (c *connectionImpl) GetTablesForDBSchema(ctx context.Context, catalogName s
 		CatalogName:  &catalogName,
 		DatabaseName: &schemaName,
 	}
-	if tableFilter == nil {
-		matchAll := ".*"
-		input.Expression = &matchAll
-	} else if *tableFilter == "" {
+	if tableFilter != nil && *tableFilter == "" {
 		return []driverbase.TableInfo{}, nil
 	} else {
-		input.Expression = tableFilter
+		tableFilterExpression := likePatternToRegex(tableFilter)
+		input.Expression = &tableFilterExpression
 	}
 
 	paginator := athenaSDK.NewListTableMetadataPaginator(c.athenaClient, input)
@@ -297,6 +295,46 @@ func (c *connectionImpl) GetTablesForDBSchema(ctx context.Context, catalogName s
 		}
 	}
 	return tables, nil
+}
+
+func likePatternToRegex(likePattern *string) string {
+	if likePattern == nil {
+		return ".*"
+	}
+	pat := *likePattern
+	var out strings.Builder
+	out.Grow(len(pat) * 2)
+
+	isEscape := false
+	for i := 0; i < len(pat); i++ {
+		ch := pat[i]
+		if ch == '\\' && !isEscape {
+			isEscape = true
+		} else if (ch == '%' || ch == '_') {
+			if (isEscape) {
+				out.WriteByte(ch)
+				isEscape = false;
+			} else {
+				out.WriteByte('.')
+				if ch == '%' {
+					out.WriteByte('*')
+					for i+1 < len(pat) && pat[i+1] == ch {
+						i++
+					}
+				}
+			}
+		} else if (isEscape || strings.ContainsRune("?+.[]{}()^$|*\\<>=-!", rune(ch))) {
+			out.WriteByte('\\')
+			out.WriteByte(ch)
+			isEscape = false;
+		} else {
+			out.WriteByte(ch)
+		}
+	}
+	if isEscape {
+		out.WriteByte('\\')
+	}
+	return out.String()
 }
 
 // athenaTypeToArrow converts an Athena column type string to an Arrow DataType.
