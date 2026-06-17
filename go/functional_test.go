@@ -684,6 +684,68 @@ func TestFunctional_GetTablesForDBSchema_WithColumns(t *testing.T) {
 	assert.Equal(t, "timestamp", *col2.XdbcTypeName)
 }
 
+func TestFunctional_GetTablesForDBSchema_WithColumnFilter(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		listTableMetadataFn: func(_ context.Context, _ *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
+			return &athenaSDK.ListTableMetadataOutput{
+				TableMetadataList: []types.TableMetadata{
+					{
+						Name:      strp("events"),
+						TableType: strp("EXTERNAL_TABLE"),
+						Columns: []types.Column{
+							{Name: strp("event_id"), Type: strp("bigint")},
+							{Name: strp("event_name"), Type: strp("varchar")},
+							{Name: strp("created_at"), Type: strp("timestamp")},
+						},
+					},
+				},
+			}, nil
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, nil)
+	tables, err := conn.GetTablesForDBSchema(context.Background(), "cat", "db", strp("events"), strp("event%"), true)
+	require.NoError(t, err)
+	require.Len(t, tables, 1)
+	require.Len(t, tables[0].TableColumns, 2)
+
+	col0 := tables[0].TableColumns[0]
+	assert.Equal(t, "event_id", col0.ColumnName)
+	assert.Equal(t, int32(1), *col0.OrdinalPosition)
+	assert.Equal(t, "bigint", *col0.XdbcTypeName)
+
+	col2 := tables[0].TableColumns[1]
+	assert.Equal(t, "event_name", col2.ColumnName)
+	assert.Equal(t, int32(2), *col2.OrdinalPosition)
+	assert.Equal(t, "varchar", *col2.XdbcTypeName)
+}
+
+func TestFunctional_GetTablesForDBSchema_WithEmptyColumnFilter(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		listTableMetadataFn: func(_ context.Context, _ *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
+			return &athenaSDK.ListTableMetadataOutput{
+				TableMetadataList: []types.TableMetadata{
+					{
+						Name:      strp("events"),
+						TableType: strp("EXTERNAL_TABLE"),
+						Columns: []types.Column{
+							{Name: strp("event_id"), Type: strp("bigint")},
+							{Name: strp("event_name"), Type: strp("varchar")},
+							{Name: strp("created_at"), Type: strp("timestamp")},
+						},
+					},
+				},
+			}, nil
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, nil)
+	tables, err := conn.GetTablesForDBSchema(context.Background(), "cat", "db", strp("events"), strp(""), true)
+	require.NoError(t, err)
+	require.Len(t, tables, 1)
+	require.Len(t, tables[0].TableColumns, 0)
+}
+
 // TestFunctional_GetTablesForDBSchema_NilTableFilter verifies that Expression
 // is not set when tableFilter is nil.
 func TestFunctional_GetTablesForDBSchema_NilTableFilter(t *testing.T) {

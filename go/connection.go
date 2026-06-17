@@ -238,7 +238,7 @@ func (c *connectionImpl) GetDBSchemasForCatalog(ctx context.Context, catalog str
 	return schemas, nil
 }
 
-func (c *connectionImpl) GetTablesForDBSchema(ctx context.Context, catalogName string, schemaName string, tableFilter *string, _ *string, includeColumns bool) ([]driverbase.TableInfo, error) {
+func (c *connectionImpl) GetTablesForDBSchema(ctx context.Context, catalogName string, schemaName string, tableFilter *string, columnFilter *string, includeColumns bool) ([]driverbase.TableInfo, error) {
 	input := &athenaSDK.ListTableMetadataInput{
 		CatalogName:  &catalogName,
 		DatabaseName: &schemaName,
@@ -252,6 +252,10 @@ func (c *connectionImpl) GetTablesForDBSchema(ctx context.Context, catalogName s
 		}
 		expressionStr := tableFilterExpression.String()
 		input.Expression = &expressionStr
+	}
+	columnPattern, err := likePatternToRegex(columnFilter)
+	if err != nil {
+		return nil, err
 	}
 
 	paginator := athenaSDK.NewListTableMetadataPaginator(c.athenaClient, input)
@@ -279,12 +283,15 @@ func (c *connectionImpl) GetTablesForDBSchema(ctx context.Context, catalogName s
 				TableType: tableType,
 			}
 
-			if includeColumns {
+			if includeColumns && (columnFilter == nil || *columnFilter != "") {
 				cols := make([]driverbase.ColumnInfo, 0, len(tbl.Columns))
 				for i, col := range tbl.Columns {
 					colName := ""
 					if col.Name != nil {
 						colName = *col.Name
+					}
+					if !columnPattern.MatchString(*col.Name) {
+						continue
 					}
 					typeName := ""
 					if col.Type != nil {

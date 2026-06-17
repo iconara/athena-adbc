@@ -522,3 +522,60 @@ func TestIntegration_ListTables_WithWildcards(t *testing.T) {
 	tableNames := listTables(t, conn, strPtr("AwsDataCatalog"), &schemaFilter, strPtr("test%"))
 	assert.Equal(t, []string{"test_table_1", "test_table_2"}, tableNames)
 }
+
+type columnInfo struct {
+	table    string
+	name     string
+	dataType string
+}
+
+func listColumns(t *testing.T, conn adbc.Connection, catalogName *string, schemaName *string, tableName *string, columnFilter *string) []columnInfo {
+	rdr, err := conn.GetObjects(
+		context.Background(),
+		adbc.ObjectDepthColumns,
+		catalogName, schemaName, tableName, columnFilter, nil,
+	)
+	require.NoError(t, err)
+	defer rdr.Release()
+
+	var columns []columnInfo
+	for rdr.Next() {
+		rec := rdr.RecordBatch()
+		dbSchemasList := rec.Column(1).(*array.List)
+		dbSchemasStruct := dbSchemasList.ListValues().(*array.Struct)
+		tablesList := dbSchemasStruct.Field(1).(*array.List)
+		tablesStruct := tablesList.ListValues().(*array.Struct)
+		tableNameCol := tablesStruct.Field(0).(*array.String)
+		columnsList := tablesStruct.Field(2).(*array.List)
+		columnsStruct := columnsList.ListValues().(*array.Struct)
+		colNameCol := columnsStruct.Field(0).(*array.String)
+		colTypeCol := columnsStruct.Field(4).(*array.String)
+		for ti := 0; ti < tablesStruct.Len(); ti++ {
+			tblName := tableNameCol.Value(ti)
+			colStart := int(columnsList.Offsets()[ti])
+			colEnd := int(columnsList.Offsets()[ti+1])
+			for ci := colStart; ci < colEnd; ci++ {
+				columns = append(columns, columnInfo{tblName, colNameCol.Value(ci), colTypeCol.Value(ci)})
+			}
+		}
+	}
+	require.NoError(t, rdr.Err())
+
+	return columns
+}
+
+func TestIntegration_ListColumns(t *testing.T) {
+	conn := integrationConn(t)
+	columns := listColumns(t, conn, strPtr("AwsDataCatalog"), &testSchemaName, strPtr("test\\_table_2"), nil)
+	assert.Equal(t, columnInfo{"test_table_2", "user_id", "bigint"}, columns[0])
+	assert.Equal(t, columnInfo{"test_table_2", "score", "double"}, columns[1])
+	assert.Equal(t, columnInfo{"test_table_2", "active", "boolean"}, columns[2])
+	assert.Equal(t, columnInfo{"test_table_2", "updated_at", "timestamp"}, columns[3])
+}
+
+func TestIntegration_ListColumns_WithWildcards(t *testing.T) {
+	conn := integrationConn(t)
+	columns := listColumns(t, conn, strPtr("AwsDataCatalog"), &testSchemaName, strPtr("test\\_table%"), strPtr("%\\_at"))
+	assert.Equal(t, columnInfo{"test_table_1", "created_at", "timestamp"}, columns[0])
+	assert.Equal(t, columnInfo{"test_table_2", "updated_at", "timestamp"}, columns[1])
+}
