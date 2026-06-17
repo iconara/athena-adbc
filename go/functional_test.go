@@ -20,7 +20,6 @@ package athena
 import (
 	"context"
 	"fmt"
-	"sort"
 	"sync/atomic"
 	"testing"
 
@@ -508,6 +507,7 @@ func TestFunctional_ListCatalogs_WithFilter(t *testing.T) {
 			return &glueSDK.GetCatalogsOutput{
 				CatalogList: []glueTypes.Catalog{
 					{CatalogId: strp("111111111111:my_glue_catalog")},
+					{CatalogId: strp("111111111111:my-glue_catalog")},
 					{CatalogId: strp("222222222222:another_glue_catalog")},
 				},
 			}, nil
@@ -517,7 +517,10 @@ func TestFunctional_ListCatalogs_WithFilter(t *testing.T) {
 	conn := newTestConn(t, athenaMock, glueMock)
 	catalogs, err := conn.GetCatalogs(context.Background(), strp("my%"))
 	require.NoError(t, err)
-	assert.Equal(t, []string{"MyGlueCatalog", "my_glue_catalog"}, catalogs)
+	assert.Equal(t, []string{"MyGlueCatalog", "my_glue_catalog", "my-glue_catalog"}, catalogs)
+	catalogs, err = conn.GetCatalogs(context.Background(), strp("my\\_glue%"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my_glue_catalog"}, catalogs)
 }
 
 // TestFunctional_ListSchemas verifies the ListDatabases pagination path.
@@ -581,6 +584,7 @@ func TestFunctional_ListSchemas_WithFilter(t *testing.T) {
 					{Name: strp("default")},
 					{Name: strp("analytics")},
 					{Name: strp("another_schema")},
+					{Name: strp("another-schema")},
 					{Name: strp("schema_four")},
 				},
 			}, nil
@@ -590,7 +594,10 @@ func TestFunctional_ListSchemas_WithFilter(t *testing.T) {
 	conn := newTestConn(t, athenaMock, nil)
 	schemas, err := conn.GetDBSchemasForCatalog(context.Background(), "AwsDataCatalog", strp("%schema%"))
 	require.NoError(t, err)
-	assert.Equal(t, []string{"another_schema", "schema_four"}, schemas)
+	assert.Equal(t, []string{"another_schema", "another-schema", "schema_four"}, schemas)
+	schemas, err = conn.GetDBSchemasForCatalog(context.Background(), "AwsDataCatalog", strp("another\\_schema"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"another_schema"}, schemas)
 }
 
 // TestFunctional_ListSchemas_SkipsMetadataException verifies that
@@ -616,7 +623,7 @@ func TestFunctional_GetTablesForDBSchema(t *testing.T) {
 		listTableMetadataFn: func(_ context.Context, params *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
 			assert.Equal(t, "cat", *params.CatalogName)
 			assert.Equal(t, "db", *params.DatabaseName)
-			assert.Equal(t, "tbl", *params.Expression)
+			assert.Equal(t, "(?i)^tbl$", *params.Expression)
 			return &athenaSDK.ListTableMetadataOutput{
 				TableMetadataList: []types.TableMetadata{
 					{
@@ -682,7 +689,7 @@ func TestFunctional_GetTablesForDBSchema_WithColumns(t *testing.T) {
 func TestFunctional_GetTablesForDBSchema_NilTableFilter(t *testing.T) {
 	athenaMock := &mockAthenaClient{
 		listTableMetadataFn: func(_ context.Context, params *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
-			assert.Equal(t, strp(".*"), params.Expression)
+			assert.Nil(t, params.Expression)
 			return &athenaSDK.ListTableMetadataOutput{}, nil
 		},
 	}
@@ -696,57 +703,52 @@ func TestFunctional_GetTablesForDBSchema_NilTableFilter(t *testing.T) {
 // TestFunctional_GetTablesForDBSchema_Patterns verifies that underscores and percent in the table are translated into regular expression syntax
 func TestFunctional_GetTablesForDBSchema_Patterns(t *testing.T) {
 	examples := map[string]string{
-		"my_table":         "my.table",
-		"my\\_table":       "my_table",
-		"my\\\\_table":     "my\\\\.table",
-		"my\\\\\\\\_table": "my\\\\\\\\.table",
-		"_t":               ".t",
-		"table_":           "table.",
-		"my______table":    "my......table",
-		"__table":          "..table",
-		"table____":        "table....",
-		"table%":           "table.*",
-		"%table%":          ".*table.*",
-		"%table":           ".*table",
-		"my%table":         "my.*table",
-		"my%%table":        "my.*table",
-		"my\\%table":       "my%table",
-		"my\\\\%table":     "my\\\\.*table",
-		"my\\\\\\%table":   "my\\\\%table",
-		"my\\\\\\\\%table": "my\\\\\\\\.*table",
-		"table%%%%":        "table.*",
-		"%%%%%%table":      ".*table",
-		"table?":           "table\\?",
-		"+able":            "\\+able",
-		"t..le":            "t\\.\\.le",
-		"my<[{table}]>":    "my\\<\\[\\{table\\}\\]\\>",
-		"my|=-!$*^table":   "my\\|\\=\\-\\!\\$\\*\\^table",
-	}
-	tableFilters := make([]string, 0)
-	for tableFilter, _ := range examples {
-		tableFilters = append(tableFilters, tableFilter)
-	}
-	sort.Strings(tableFilters)
-	capturedExpressions := make([]string, 0)
-
-	athenaMock := &mockAthenaClient{
-		listTableMetadataFn: func(_ context.Context, params *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
-			capturedExpressions = append(capturedExpressions, *params.Expression)
-			return &athenaSDK.ListTableMetadataOutput{}, nil
-		},
+		"my_table":         "(?i)^my.table$",
+		"my\\_table":       "(?i)^my_table$",
+		"my\\\\_table":     "(?i)^my\\\\.table$",
+		"my\\\\\\\\_table": "(?i)^my\\\\\\\\.table$",
+		"_t":               "(?i)^.t$",
+		"table_":           "(?i)^table.$",
+		"my______table":    "(?i)^my......table$",
+		"__table":          "(?i)^..table$",
+		"table____":        "(?i)^table....$",
+		"table%":           "(?i)^table.*$",
+		"%table%":          "(?i)^.*table.*$",
+		"%table":           "(?i)^.*table$",
+		"my%table":         "(?i)^my.*table$",
+		"my%%table":        "(?i)^my.*table$",
+		"my\\%table":       "(?i)^my%table$",
+		"my\\\\%table":     "(?i)^my\\\\.*table$",
+		"my\\\\\\%table":   "(?i)^my\\\\%table$",
+		"my\\\\\\\\%table": "(?i)^my\\\\\\\\.*table$",
+		"table%%%%":        "(?i)^table.*$",
+		"%%%%table":        "(?i)^.*table$",
+		"table?":           "(?i)^table\\?$",
+		"+abl%":            "(?i)^\\+abl.*$",
+		"t..le":            "(?i)^t\\.\\.le$",
+		"my<[{table}]>":    "(?i)^my\\<\\[\\{table\\}\\]\\>$",
+		"my|=-!$*^table":   "(?i)^my\\|\\=\\-\\!\\$\\*\\^table$",
 	}
 
-	conn := newTestConn(t, athenaMock, nil)
-	for _, tableFilter := range tableFilters {
-		conn.GetTablesForDBSchema(context.Background(), "cat", "db", &tableFilter, nil, false)
+	for tableFilter, expectedExpression := range examples {
+		athenaMock := &mockAthenaClient{
+			listTableMetadataFn: func(_ context.Context, params *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
+				assert.Equal(t, expectedExpression, *params.Expression)
+				return &athenaSDK.ListTableMetadataOutput{}, nil
+			},
+		}
+
+		conn := newTestConn(t, athenaMock, nil)
+		_, err := conn.GetTablesForDBSchema(context.Background(), "cat", "db", &tableFilter, nil, false)
+		require.NoError(t, err)
 	}
-	for i, tableFilter := range tableFilters {
-		assert.Equal(t, examples[tableFilter], capturedExpressions[i],
-			fmt.Sprintf("Expected \"%s\" to be transformed to \"%s\" but got \"%s\"",
-				tableFilter,
-				examples[tableFilter],
-				capturedExpressions[i]))
-	}
+}
+
+// TestFunctional_GetTablesForDBSchema_NilTableFilter verifies that malformed table filters are not accepted
+func TestFunctional_GetTablesForDBSchema_MalformedTableFilter(t *testing.T) {
+	conn := newTestConn(t, nil, nil)
+	_, err := conn.GetTablesForDBSchema(context.Background(), "cat", "db", strp("tbl\\"), nil, false)
+	assert.ErrorContains(t, err, "pattern cannot end with an escape")
 }
 
 // TestFunctional_GetTablesForDBSchema_EmptyTableFilter verifies that GetTablesForDBSchema

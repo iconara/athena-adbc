@@ -132,7 +132,7 @@ func (c *connectionImpl) GetCatalogs(ctx context.Context, catalogFilter *string)
 		return []string{}, nil
 	}
 
-	catalogPattern, err := driverbase.PatternToRegexp(catalogFilter)
+	catalogPattern, err := likePatternToRegex(catalogFilter)
 	if err != nil {
 		return nil, err
 	} else if catalogPattern == nil {
@@ -205,7 +205,7 @@ func (c *connectionImpl) GetDBSchemasForCatalog(ctx context.Context, catalog str
 	if catalog == "" || (schemaFilter != nil && *schemaFilter == "") {
 		return []string{}, nil
 	}
-	schemaPattern, err := driverbase.PatternToRegexp(schemaFilter)
+	schemaPattern, err := likePatternToRegex(schemaFilter)
 	if err != nil {
 		return nil, err
 	} else if schemaPattern == nil {
@@ -245,9 +245,13 @@ func (c *connectionImpl) GetTablesForDBSchema(ctx context.Context, catalogName s
 	}
 	if tableFilter != nil && *tableFilter == "" {
 		return []driverbase.TableInfo{}, nil
-	} else {
-		tableFilterExpression := likePatternToRegex(tableFilter)
-		input.Expression = &tableFilterExpression
+	} else if tableFilter != nil {
+		tableFilterExpression, err := likePatternToRegex(tableFilter)
+		if err != nil {
+			return nil, err
+		}
+		expressionStr := tableFilterExpression.String()
+		input.Expression = &expressionStr
 	}
 
 	paginator := athenaSDK.NewListTableMetadataPaginator(c.athenaClient, input)
@@ -302,13 +306,14 @@ func (c *connectionImpl) GetTablesForDBSchema(ctx context.Context, catalogName s
 	return tables, nil
 }
 
-func likePatternToRegex(likePattern *string) string {
+func likePatternToRegex(likePattern *string) (*regexp.Regexp, error) {
 	if likePattern == nil {
-		return ".*"
+		return regexp.MustCompile("^.*$"), nil
 	}
 	pat := *likePattern
 	var out strings.Builder
 	out.Grow(len(pat) * 2)
+	out.WriteString("(?i)^")
 
 	isEscape := false
 	for i := 0; i < len(pat); i++ {
@@ -337,9 +342,20 @@ func likePatternToRegex(likePattern *string) string {
 		}
 	}
 	if isEscape {
-		out.WriteByte('\\')
+		return nil, adbc.Error{
+			Code: adbc.StatusInvalidArgument,
+			Msg:  "pattern cannot end with an escape",
+		}
 	}
-	return out.String()
+	out.WriteByte('$')
+	r, err := regexp.Compile(out.String())
+	if err != nil {
+		return nil, adbc.Error{
+			Code: adbc.StatusInvalidArgument,
+			Msg:  fmt.Sprintf("could not compile pattern to regexp: %v", err),
+		}
+	}
+	return r, nil
 }
 
 // athenaTypeToArrow converts an Athena column type string to an Arrow DataType.
