@@ -888,3 +888,16 @@ func TestFunctional_GetTablesForDBSchema_APIError(t *testing.T) {
 	assert.Equal(t, adbc.StatusIO, adbcErr.Code)
 	assert.Contains(t, adbcErr.Msg, "ListTableMetadata failed")
 }
+
+func TestFunctional_GetTablesForDBSchema_SkipsMetadataException(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		listTableMetadataFn: func(_ context.Context, _ *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
+			return nil, &types.MetadataException{Message: strp("not possible!")}
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, nil)
+	tables, err := conn.GetTablesForDBSchema(context.Background(), "cat", "db", nil, nil, true)
+	require.NoError(t, err)
+	assert.Empty(t, tables)
+}

@@ -264,9 +264,15 @@ func (c *connectionImpl) GetTablesForDBSchema(ctx context.Context, catalogName s
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return nil, adbc.Error{
-				Code: adbc.StatusIO,
-				Msg:  fmt.Sprintf("ListTableMetadata failed: %v", err),
+			if err != nil {
+				var metadataErr *types.MetadataException
+				if errors.As(err, &metadataErr) {
+					return nil, nil
+				}
+				return nil, adbc.Error{
+					Code: adbc.StatusIO,
+					Msg:  fmt.Sprintf("ListTableMetadata failed: %v", err),
+				}
 			}
 		}
 		for _, tbl := range page.TableMetadataList {
