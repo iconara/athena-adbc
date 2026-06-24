@@ -28,8 +28,9 @@ import (
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow"
 	athenaSDK "github.com/aws/aws-sdk-go-v2/service/athena"
-	"github.com/aws/aws-sdk-go-v2/service/athena/types"
+	athenaTypes "github.com/aws/aws-sdk-go-v2/service/athena/types"
 	glueSDK "github.com/aws/aws-sdk-go-v2/service/glue"
+	glueTypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
 )
 
 type connectionImpl struct {
@@ -132,13 +133,63 @@ func (c *connectionImpl) GetCatalogs(ctx context.Context, catalogFilter *string)
 		return []string{}, nil
 	}
 
-	catalogPattern, err := likePatternToRegex(catalogFilter)
+	if catalogFilter == nil || hasWildcards(catalogFilter) {
+		catalogPattern, err := likePatternToRegex(catalogFilter)
+		if err != nil {
+			return nil, err
+		}
+		if catalogPattern == nil {
+			catalogPattern = regexp.MustCompile("^.*$")
+		}
+		return c.listCatalogs(ctx, catalogPattern)
+	} else if *catalogFilter == "AwsDataCatalog" {
+		return []string{*catalogFilter}, nil
+	} else {
+		catalog, err := c.checkCatalog(ctx, catalogFilter)
+		if err != nil {
+			return nil, err
+		} else if catalog != nil {
+			return []string{*catalog}, nil
+		} else {
+			return nil, nil
+		}
+	}
+}
+
+func (c *connectionImpl) checkCatalog(ctx context.Context, catalogName *string) (*string, error) {
+	unescaped := unescapeLikePattern(*catalogName)
+
+	athenaResponse, err := c.athenaClient.GetDataCatalog(ctx, &athenaSDK.GetDataCatalogInput{
+		Name: &unescaped,
+	})
+	var invalidRequestException *athenaTypes.InvalidRequestException
 	if err != nil {
-		return nil, err
-	} else if catalogPattern == nil {
-		catalogPattern = regexp.MustCompile("^.*$")
+		if !errors.As(err, &invalidRequestException) {
+			return nil, err
+		}
+	} else {
+		return athenaResponse.DataCatalog.Name, nil
 	}
 
+	glueResponse, err := c.glueClient.GetCatalog(ctx, &glueSDK.GetCatalogInput{
+		CatalogId: &unescaped,
+	})
+	var entityNotFoundException *glueTypes.EntityNotFoundException
+	if err != nil {
+		if !errors.As(err, &entityNotFoundException) {
+			return nil, err
+		}
+	} else if glueResponse.Catalog != nil && glueResponse.Catalog.CatalogId != nil {
+		name := *glueResponse.Catalog.CatalogId
+		if _, after, ok := strings.Cut(name, ":"); ok {
+			name = after
+		}
+		return &name, nil
+	}
+	return nil, nil
+}
+
+func (c *connectionImpl) listCatalogs(ctx context.Context, catalogPattern *regexp.Regexp) ([]string, error) {
 	catalogs, err := c.listAthenaCatalogs(ctx, catalogPattern)
 	if err != nil {
 		return nil, err
@@ -220,7 +271,7 @@ func (c *connectionImpl) GetDBSchemasForCatalog(ctx context.Context, catalog str
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			var metadataErr *types.MetadataException
+			var metadataErr *athenaTypes.MetadataException
 			if errors.As(err, &metadataErr) {
 				return nil, nil
 			}
@@ -265,7 +316,7 @@ func (c *connectionImpl) GetTablesForDBSchema(ctx context.Context, catalogName s
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
 			if err != nil {
-				var metadataErr *types.MetadataException
+				var metadataErr *athenaTypes.MetadataException
 				if errors.As(err, &metadataErr) {
 					return nil, nil
 				}
@@ -317,6 +368,38 @@ func (c *connectionImpl) GetTablesForDBSchema(ctx context.Context, catalogName s
 		}
 	}
 	return tables, nil
+}
+
+func hasWildcards(likePattern *string) bool {
+	if likePattern == nil {
+		return false
+	}
+	isEscape := false
+	for i := 0; i < len(*likePattern); i++ {
+		ch := (*likePattern)[i]
+		if !isEscape && ch == '\\' {
+			isEscape = true
+		} else if !isEscape && (ch == '_' || ch == '%') {
+			return true
+		} else {
+			isEscape = false
+		}
+	}
+	return false
+}
+
+func unescapeLikePattern(s string) string {
+	var out strings.Builder
+	out.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			i++
+			out.WriteByte(s[i])
+		} else {
+			out.WriteByte(s[i])
+		}
+	}
+	return out.String()
 }
 
 func likePatternToRegex(likePattern *string) (*regexp.Regexp, error) {

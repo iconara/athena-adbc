@@ -32,6 +32,7 @@ import (
 // superset of all of them, so any value of this type can be passed directly
 // to those constructors.
 type athenaClientAPI interface {
+	GetDataCatalog(ctx context.Context, params *athenaSDK.GetDataCatalogInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetDataCatalogOutput, error)
 	GetTableMetadata(ctx context.Context, params *athenaSDK.GetTableMetadataInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetTableMetadataOutput, error)
 	ListDataCatalogs(ctx context.Context, params *athenaSDK.ListDataCatalogsInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.ListDataCatalogsOutput, error)
 	ListDatabases(ctx context.Context, params *athenaSDK.ListDatabasesInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.ListDatabasesOutput, error)
@@ -45,5 +46,6 @@ type athenaClientAPI interface {
 // glueClientAPI abstracts the AWS Glue SDK client to allow injection of
 // test doubles. *glueSDK.Client satisfies this interface implicitly.
 type glueClientAPI interface {
+	GetCatalog(ctx context.Context, params *glueSDK.GetCatalogInput, optFns ...func(*glueSDK.Options)) (*glueSDK.GetCatalogOutput, error)
 	GetCatalogs(ctx context.Context, params *glueSDK.GetCatalogsInput, optFns ...func(*glueSDK.Options)) (*glueSDK.GetCatalogsOutput, error)
 }

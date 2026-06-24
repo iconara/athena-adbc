@@ -28,6 +28,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	athenaSDK "github.com/aws/aws-sdk-go-v2/service/athena"
 	"github.com/aws/aws-sdk-go-v2/service/athena/types"
+	athenaTypes "github.com/aws/aws-sdk-go-v2/service/athena/types"
 	glueSDK "github.com/aws/aws-sdk-go-v2/service/glue"
 	glueTypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
 	"github.com/stretchr/testify/assert"
@@ -45,6 +46,7 @@ import (
 type mockAthenaClient struct {
 	startQueryExecutionFn func(ctx context.Context, params *athenaSDK.StartQueryExecutionInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.StartQueryExecutionOutput, error)
 	stopQueryExecutionFn  func(ctx context.Context, params *athenaSDK.StopQueryExecutionInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.StopQueryExecutionOutput, error)
+	getDataCatalogFn      func(ctx context.Context, params *athenaSDK.GetDataCatalogInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetDataCatalogOutput, error)
 	getQueryExecutionFn   func(ctx context.Context, params *athenaSDK.GetQueryExecutionInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetQueryExecutionOutput, error)
 	getQueryResultsFn     func(ctx context.Context, params *athenaSDK.GetQueryResultsInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetQueryResultsOutput, error)
 	getTableMetadataFn    func(ctx context.Context, params *athenaSDK.GetTableMetadataInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetTableMetadataOutput, error)
@@ -61,6 +63,9 @@ func (m *mockAthenaClient) StopQueryExecution(ctx context.Context, params *athen
 		return m.stopQueryExecutionFn(ctx, params, optFns...)
 	}
 	return &athenaSDK.StopQueryExecutionOutput{}, nil
+}
+func (m *mockAthenaClient) GetDataCatalog(ctx context.Context, params *athenaSDK.GetDataCatalogInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetDataCatalogOutput, error) {
+	return m.getDataCatalogFn(ctx, params, optFns...)
 }
 func (m *mockAthenaClient) GetQueryExecution(ctx context.Context, params *athenaSDK.GetQueryExecutionInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetQueryExecutionOutput, error) {
 	return m.getQueryExecutionFn(ctx, params, optFns...)
@@ -83,9 +88,13 @@ func (m *mockAthenaClient) ListTableMetadata(ctx context.Context, params *athena
 
 // mockGlueClient implements glueClientAPI using per-method function fields.
 type mockGlueClient struct {
+	getCatalogFn  func(ctx context.Context, params *glueSDK.GetCatalogInput, optFns ...func(*glueSDK.Options)) (*glueSDK.GetCatalogOutput, error)
 	getCatalogsFn func(ctx context.Context, params *glueSDK.GetCatalogsInput, optFns ...func(*glueSDK.Options)) (*glueSDK.GetCatalogsOutput, error)
 }
 
+func (m *mockGlueClient) GetCatalog(ctx context.Context, params *glueSDK.GetCatalogInput, optFns ...func(*glueSDK.Options)) (*glueSDK.GetCatalogOutput, error) {
+	return m.getCatalogFn(ctx, params, optFns...)
+}
 func (m *mockGlueClient) GetCatalogs(ctx context.Context, params *glueSDK.GetCatalogsInput, optFns ...func(*glueSDK.Options)) (*glueSDK.GetCatalogsOutput, error) {
 	return m.getCatalogsFn(ctx, params, optFns...)
 }
@@ -521,6 +530,88 @@ func TestFunctional_ListCatalogs_WithFilter(t *testing.T) {
 	catalogs, err = conn.GetCatalogs(context.Background(), strp("my\\_glue%"))
 	require.NoError(t, err)
 	assert.Equal(t, []string{"my_glue_catalog"}, catalogs)
+}
+
+func TestFunctional_ListCatalogs_WithNonWildcardName(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		getDataCatalogFn: func(_ context.Context, params *athenaSDK.GetDataCatalogInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetDataCatalogOutput, error) {
+			if *params.Name == "SomeDataCatalog" {
+				return &athenaSDK.GetDataCatalogOutput{
+					DataCatalog: &athenaTypes.DataCatalog{
+						Name: strp("SomeDataCatalog"),
+					},
+				}, nil
+			} else {
+				return nil, &types.InvalidRequestException{Message: strp("Not found")}
+			}
+		},
+	}
+	glueMock := &mockGlueClient{
+		getCatalogFn: func(_ context.Context, params *glueSDK.GetCatalogInput, _ ...func(*glueSDK.Options)) (*glueSDK.GetCatalogOutput, error) {
+			if *params.CatalogId == "my_glue_catalog" {
+				return &glueSDK.GetCatalogOutput{
+					Catalog: &glueTypes.Catalog{
+						CatalogId: strp("111111111111:my_glue_catalog"),
+						Name:      strp("my_glue_catalog"),
+					},
+				}, nil
+			} else {
+				return nil, &glueTypes.EntityNotFoundException{Message: strp("Not found")}
+			}
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, glueMock)
+	catalogs, err := conn.GetCatalogs(context.Background(), strp("SomeDataCatalog"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"SomeDataCatalog"}, catalogs)
+	catalogs, err = conn.GetCatalogs(context.Background(), strp("my\\_glue\\_catalog"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my_glue_catalog"}, catalogs)
+}
+
+func TestFunctional_CheckCatalog_ReturnsFullNameFromGlueCatalogId(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		getDataCatalogFn: func(_ context.Context, _ *athenaSDK.GetDataCatalogInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetDataCatalogOutput, error) {
+			return nil, &types.InvalidRequestException{Message: strp("Not found")}
+		},
+	}
+	glueMock := &mockGlueClient{
+		getCatalogFn: func(_ context.Context, params *glueSDK.GetCatalogInput, _ ...func(*glueSDK.Options)) (*glueSDK.GetCatalogOutput, error) {
+			assert.Equal(t, "s3tablescatalog/my-table-bucket", *params.CatalogId)
+			return &glueSDK.GetCatalogOutput{
+				Catalog: &glueTypes.Catalog{
+					CatalogId: strp("111111111111:s3tablescatalog/my-table-bucket"),
+					Name:      strp("my-table-bucket"),
+				},
+			}, nil
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, glueMock)
+	catalogs, err := conn.GetCatalogs(context.Background(), strp("s3tablescatalog/my-table-bucket"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"s3tablescatalog/my-table-bucket"}, catalogs)
+}
+
+func TestFunctional_ListCatalogs_WithAwsDataCatalog(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		getDataCatalogFn: func(_ context.Context, params *athenaSDK.GetDataCatalogInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetDataCatalogOutput, error) {
+			t.Fatal("GetDataCatalog should not be called")
+			return nil, nil
+		},
+	}
+	glueMock := &mockGlueClient{
+		getCatalogFn: func(_ context.Context, params *glueSDK.GetCatalogInput, _ ...func(*glueSDK.Options)) (*glueSDK.GetCatalogOutput, error) {
+			t.Fatal("GetCatalog should not be called")
+			return nil, nil
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, glueMock)
+	catalogs, err := conn.GetCatalogs(context.Background(), strp("AwsDataCatalog"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"AwsDataCatalog"}, catalogs)
 }
 
 // TestFunctional_ListSchemas verifies the ListDatabases pagination path.
