@@ -47,6 +47,13 @@ type connectionImpl struct {
 	schema  string
 }
 
+func (c *connectionImpl) workGroup() *string {
+	if c.db.workGroup == "" {
+		return nil
+	}
+	return &c.db.workGroup
+}
+
 func (c *connectionImpl) Close() error {
 	c.athenaClient = nil
 	c.db = nil
@@ -164,7 +171,8 @@ func (c *connectionImpl) checkCatalog(ctx context.Context, catalogName *string) 
 	unescaped := unescapeLikePattern(*catalogName)
 
 	athenaResponse, err := c.athenaClient.GetDataCatalog(ctx, &athenaSDK.GetDataCatalogInput{
-		Name: &unescaped,
+		Name:      &unescaped,
+		WorkGroup: c.workGroup(),
 	})
 	var invalidRequestException *athenaTypes.InvalidRequestException
 	if err != nil {
@@ -209,7 +217,9 @@ func (c *connectionImpl) listCatalogs(ctx context.Context, catalogPattern *regex
 }
 
 func (c *connectionImpl) listAthenaCatalogs(ctx context.Context, catalogPattern *regexp.Regexp) ([]string, error) {
-	listInput := &athenaSDK.ListDataCatalogsInput{}
+	listInput := &athenaSDK.ListDataCatalogsInput{
+		WorkGroup: c.workGroup(),
+	}
 	paginator := athenaSDK.NewListDataCatalogsPaginator(c.athenaClient, listInput)
 
 	var catalogs []string
@@ -277,6 +287,7 @@ func (c *connectionImpl) checkSchema(ctx context.Context, catalog string, schema
 	out, err := c.athenaClient.GetDatabase(ctx, &athenaSDK.GetDatabaseInput{
 		CatalogName:  &catalog,
 		DatabaseName: &unescaped,
+		WorkGroup:    c.workGroup(),
 	})
 	if err != nil {
 		var metadataErr *athenaTypes.MetadataException
@@ -304,6 +315,7 @@ func (c *connectionImpl) listSchemas(ctx context.Context, catalog string, schema
 	}
 	input := &athenaSDK.ListDatabasesInput{
 		CatalogName: &catalog,
+		WorkGroup:   c.workGroup(),
 	}
 	paginator := athenaSDK.NewListDatabasesPaginator(c.athenaClient, input)
 
@@ -351,6 +363,7 @@ func (c *connectionImpl) checkTable(ctx context.Context, catalogName string, sch
 		CatalogName:  &catalogName,
 		DatabaseName: &schemaName,
 		TableName:    &unescaped,
+		WorkGroup:    c.workGroup(),
 	})
 	if err != nil {
 		var metadataErr *athenaTypes.MetadataException
@@ -376,6 +389,7 @@ func (c *connectionImpl) listTables(ctx context.Context, catalogName string, sch
 	input := &athenaSDK.ListTableMetadataInput{
 		CatalogName:  &catalogName,
 		DatabaseName: &schemaName,
+		WorkGroup:    c.workGroup(),
 	}
 	if tableFilter != nil {
 		tableFilterExpression, err := likePatternToRegex(tableFilter)

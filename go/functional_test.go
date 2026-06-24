@@ -132,7 +132,15 @@ func newTestDB(t testing.TB, mock athenaClientAPI) *databaseImpl {
 // newTestConn builds a connectionImpl directly with the mock client, bypassing
 // driverbase.Open and AWS credential resolution entirely.
 func newTestConn(t testing.TB, athenaMock athenaClientAPI, glueMock glueClientAPI) *connectionImpl {
+	return newTestConnWithWorkGroup(t, athenaMock, glueMock, nil)
+}
+
+func newTestConnWithWorkGroup(t testing.TB, athenaMock athenaClientAPI, glueMock glueClientAPI, workGroup *string) *connectionImpl {
+	t.Helper()
 	db := newTestDB(t, athenaMock)
+	if workGroup != nil {
+		db.workGroup = *workGroup
+	}
 	return &connectionImpl{
 		ConnectionImplBase: driverbase.NewConnectionImplBase(&db.DatabaseImplBase),
 		athenaClient:       athenaMock,
@@ -1042,4 +1050,128 @@ func TestFunctional_GetTablesForDBSchema_WithNonWildcardName(t *testing.T) {
 	require.Len(t, tables[0].TableColumns, 2)
 	assert.Equal(t, "id", tables[0].TableColumns[0].ColumnName)
 	assert.Equal(t, "name", tables[0].TableColumns[1].ColumnName)
+}
+
+func TestFunctional_WorkGroup_GetDataCatalog(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		getDataCatalogFn: func(_ context.Context, params *athenaSDK.GetDataCatalogInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetDataCatalogOutput, error) {
+			require.NotNil(t, params.WorkGroup)
+		assert.Equal(t, "my-workgroup", *params.WorkGroup)
+			return &athenaSDK.GetDataCatalogOutput{
+				DataCatalog: &athenaTypes.DataCatalog{
+					Name: params.Name,
+				},
+			}, nil
+		},
+	}
+	glueMock := &mockGlueClient{
+		getCatalogFn: func(_ context.Context, _ *glueSDK.GetCatalogInput, _ ...func(*glueSDK.Options)) (*glueSDK.GetCatalogOutput, error) {
+			return nil, &glueTypes.EntityNotFoundException{Message: strp("not found")}
+		},
+	}
+
+	conn := newTestConnWithWorkGroup(t, athenaMock, glueMock, strp("my-workgroup"))
+	catalogs, err := conn.GetCatalogs(context.Background(), strp("MyCatalog"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"MyCatalog"}, catalogs)
+}
+
+func TestFunctional_WorkGroup_ListDataCatalogs(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		listDataCatalogsFn: func(_ context.Context, params *athenaSDK.ListDataCatalogsInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListDataCatalogsOutput, error) {
+			require.NotNil(t, params.WorkGroup)
+		assert.Equal(t, "my-workgroup", *params.WorkGroup)
+			return &athenaSDK.ListDataCatalogsOutput{
+				DataCatalogsSummary: []types.DataCatalogSummary{
+					{CatalogName: strp("AwsDataCatalog")},
+				},
+			}, nil
+		},
+	}
+	glueMock := &mockGlueClient{
+		getCatalogsFn: func(_ context.Context, _ *glueSDK.GetCatalogsInput, _ ...func(*glueSDK.Options)) (*glueSDK.GetCatalogsOutput, error) {
+			return &glueSDK.GetCatalogsOutput{}, nil
+		},
+	}
+
+	conn := newTestConnWithWorkGroup(t, athenaMock, glueMock, strp("my-workgroup"))
+	catalogs, err := conn.GetCatalogs(context.Background(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"AwsDataCatalog"}, catalogs)
+}
+
+func TestFunctional_WorkGroup_GetDatabase(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		getDatabaseFn: func(_ context.Context, params *athenaSDK.GetDatabaseInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetDatabaseOutput, error) {
+			require.NotNil(t, params.WorkGroup)
+		assert.Equal(t, "my-workgroup", *params.WorkGroup)
+			return &athenaSDK.GetDatabaseOutput{
+				Database: &types.Database{Name: strp("my_db")},
+			}, nil
+		},
+	}
+
+	conn := newTestConnWithWorkGroup(t, athenaMock, nil, strp("my-workgroup"))
+	schemas, err := conn.GetDBSchemasForCatalog(context.Background(), "AwsDataCatalog", strp("my\\_db"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my_db"}, schemas)
+}
+
+func TestFunctional_WorkGroup_ListDatabases(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		listDatabasesFn: func(_ context.Context, params *athenaSDK.ListDatabasesInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListDatabasesOutput, error) {
+			require.NotNil(t, params.WorkGroup)
+		assert.Equal(t, "my-workgroup", *params.WorkGroup)
+			return &athenaSDK.ListDatabasesOutput{
+				DatabaseList: []types.Database{{Name: strp("default")}},
+			}, nil
+		},
+	}
+
+	conn := newTestConnWithWorkGroup(t, athenaMock, nil, strp("my-workgroup"))
+	schemas, err := conn.GetDBSchemasForCatalog(context.Background(), "AwsDataCatalog", nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"default"}, schemas)
+}
+
+func TestFunctional_WorkGroup_GetTableMetadata(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		getTableMetadataFn: func(_ context.Context, params *athenaSDK.GetTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetTableMetadataOutput, error) {
+			require.NotNil(t, params.WorkGroup)
+		assert.Equal(t, "my-workgroup", *params.WorkGroup)
+			return &athenaSDK.GetTableMetadataOutput{
+				TableMetadata: &types.TableMetadata{
+					Name:      strp("my_table"),
+					TableType: strp("EXTERNAL_TABLE"),
+				},
+			}, nil
+		},
+	}
+
+	conn := newTestConnWithWorkGroup(t, athenaMock, nil, strp("my-workgroup"))
+	filter := "my\\_table"
+	tables, err := conn.GetTablesForDBSchema(context.Background(), "cat", "db", &filter, nil, false)
+	require.NoError(t, err)
+	require.Len(t, tables, 1)
+	assert.Equal(t, "my_table", tables[0].TableName)
+}
+
+func TestFunctional_WorkGroup_ListTableMetadata(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		listTableMetadataFn: func(_ context.Context, params *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
+			require.NotNil(t, params.WorkGroup)
+		assert.Equal(t, "my-workgroup", *params.WorkGroup)
+			return &athenaSDK.ListTableMetadataOutput{
+				TableMetadataList: []types.TableMetadata{
+					{Name: strp("tbl1"), TableType: strp("EXTERNAL_TABLE")},
+				},
+			}, nil
+		},
+	}
+
+	conn := newTestConnWithWorkGroup(t, athenaMock, nil, strp("my-workgroup"))
+	tables, err := conn.GetTablesForDBSchema(context.Background(), "cat", "db", nil, nil, false)
+	require.NoError(t, err)
+	require.Len(t, tables, 1)
+	assert.Equal(t, "tbl1", tables[0].TableName)
 }
