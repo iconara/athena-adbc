@@ -133,7 +133,11 @@ func (c *connectionImpl) GetCatalogs(ctx context.Context, catalogFilter *string)
 		return []string{}, nil
 	}
 
-	if catalogFilter == nil || hasWildcards(catalogFilter) {
+	wildcards, err := hasWildcards(catalogFilter)
+	if err != nil {
+		return nil, err
+	}
+	if catalogFilter == nil || wildcards {
 		catalogPattern, err := likePatternToRegex(catalogFilter)
 		if err != nil {
 			return nil, err
@@ -257,7 +261,11 @@ func (c *connectionImpl) GetDBSchemasForCatalog(ctx context.Context, catalog str
 		return []string{}, nil
 	}
 
-	if schemaFilter != nil && !hasWildcards(schemaFilter) {
+	schemaHasWildcards, err := hasWildcards(schemaFilter)
+	if err != nil {
+		return nil, err
+	}
+	if schemaFilter != nil && !schemaHasWildcards {
 		return c.checkSchema(ctx, catalog, schemaFilter)
 	}
 	return c.listSchemas(ctx, catalog, schemaFilter)
@@ -322,23 +330,60 @@ func (c *connectionImpl) listSchemas(ctx context.Context, catalog string, schema
 }
 
 func (c *connectionImpl) GetTablesForDBSchema(ctx context.Context, catalogName string, schemaName string, tableFilter *string, columnFilter *string, includeColumns bool) ([]driverbase.TableInfo, error) {
+	if tableFilter != nil && *tableFilter == "" {
+		return []driverbase.TableInfo{}, nil
+	}
+
+	tableHasWildcards, err := hasWildcards(tableFilter)
+	if err != nil {
+		return nil, err
+	}
+	if tableFilter != nil && !tableHasWildcards {
+		return c.checkTable(ctx, catalogName, schemaName, tableFilter, columnFilter, includeColumns)
+	}
+	return c.listTables(ctx, catalogName, schemaName, tableFilter, columnFilter, includeColumns)
+}
+
+func (c *connectionImpl) checkTable(ctx context.Context, catalogName string, schemaName string, tableFilter *string, columnFilter *string, includeColumns bool) ([]driverbase.TableInfo, error) {
+	unescaped := unescapeLikePattern(*tableFilter)
+
+	out, err := c.athenaClient.GetTableMetadata(ctx, &athenaSDK.GetTableMetadataInput{
+		CatalogName:  &catalogName,
+		DatabaseName: &schemaName,
+		TableName:    &unescaped,
+	})
+	if err != nil {
+		var metadataErr *athenaTypes.MetadataException
+		if errors.As(err, &metadataErr) {
+			return nil, nil
+		}
+		return nil, adbc.Error{
+			Code: adbc.StatusIO,
+			Msg:  fmt.Sprintf("GetTableMetadata failed: %v", err),
+		}
+	}
+
+	tbl := out.TableMetadata
+	if tbl == nil || tbl.Name == nil {
+		return nil, nil
+	}
+
+	ti := tableMetadataToTableInfo(tbl, columnFilter, includeColumns)
+	return []driverbase.TableInfo{ti}, nil
+}
+
+func (c *connectionImpl) listTables(ctx context.Context, catalogName string, schemaName string, tableFilter *string, columnFilter *string, includeColumns bool) ([]driverbase.TableInfo, error) {
 	input := &athenaSDK.ListTableMetadataInput{
 		CatalogName:  &catalogName,
 		DatabaseName: &schemaName,
 	}
-	if tableFilter != nil && *tableFilter == "" {
-		return []driverbase.TableInfo{}, nil
-	} else if tableFilter != nil {
+	if tableFilter != nil {
 		tableFilterExpression, err := likePatternToRegex(tableFilter)
 		if err != nil {
 			return nil, err
 		}
 		expressionStr := tableFilterExpression.String()
 		input.Expression = &expressionStr
-	}
-	columnPattern, err := likePatternToRegex(columnFilter)
-	if err != nil {
-		return nil, err
 	}
 
 	paginator := athenaSDK.NewListTableMetadataPaginator(c.athenaClient, input)
@@ -347,64 +392,71 @@ func (c *connectionImpl) GetTablesForDBSchema(ctx context.Context, catalogName s
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			if err != nil {
-				var metadataErr *athenaTypes.MetadataException
-				if errors.As(err, &metadataErr) {
-					return nil, nil
-				}
-				return nil, adbc.Error{
-					Code: adbc.StatusIO,
-					Msg:  fmt.Sprintf("ListTableMetadata failed: %v", err),
-				}
+			var metadataErr *athenaTypes.MetadataException
+			if errors.As(err, &metadataErr) {
+				return nil, nil
+			}
+			return nil, adbc.Error{
+				Code: adbc.StatusIO,
+				Msg:  fmt.Sprintf("ListTableMetadata failed: %v", err),
 			}
 		}
 		for _, tbl := range page.TableMetadataList {
 			if tbl.Name == nil {
 				continue
 			}
-			tableType := "EXTERNAL_TABLE"
-			if tbl.TableType != nil {
-				tableType = *tbl.TableType
-			}
-
-			ti := driverbase.TableInfo{
-				TableName: *tbl.Name,
-				TableType: tableType,
-			}
-
-			if includeColumns && (columnFilter == nil || *columnFilter != "") {
-				cols := make([]driverbase.ColumnInfo, 0, len(tbl.Columns))
-				for i, col := range tbl.Columns {
-					colName := ""
-					if col.Name != nil {
-						colName = *col.Name
-					}
-					if !columnPattern.MatchString(*col.Name) {
-						continue
-					}
-					typeName := ""
-					if col.Type != nil {
-						typeName = *col.Type
-					}
-					pos := int32(i + 1)
-					cols = append(cols, driverbase.ColumnInfo{
-						ColumnName:      colName,
-						OrdinalPosition: &pos,
-						XdbcTypeName:    &typeName,
-					})
-				}
-				ti.TableColumns = cols
-			}
-
+			ti := tableMetadataToTableInfo(&tbl, columnFilter, includeColumns)
 			tables = append(tables, ti)
 		}
 	}
 	return tables, nil
 }
 
-func hasWildcards(likePattern *string) bool {
+func tableMetadataToTableInfo(tbl *athenaTypes.TableMetadata, columnFilter *string, includeColumns bool) driverbase.TableInfo {
+	tableType := "EXTERNAL_TABLE"
+	if tbl.TableType != nil {
+		tableType = *tbl.TableType
+	}
+
+	ti := driverbase.TableInfo{
+		TableName: *tbl.Name,
+		TableType: tableType,
+	}
+
+	if includeColumns && (columnFilter == nil || *columnFilter != "") {
+		columnPattern, _ := likePatternToRegex(columnFilter)
+		if columnPattern == nil {
+			columnPattern = regexp.MustCompile("^.*$")
+		}
+		cols := make([]driverbase.ColumnInfo, 0, len(tbl.Columns))
+		for i, col := range tbl.Columns {
+			colName := ""
+			if col.Name != nil {
+				colName = *col.Name
+			}
+			if !columnPattern.MatchString(colName) {
+				continue
+			}
+			typeName := ""
+			if col.Type != nil {
+				typeName = *col.Type
+			}
+			pos := int32(i + 1)
+			cols = append(cols, driverbase.ColumnInfo{
+				ColumnName:      colName,
+				OrdinalPosition: &pos,
+				XdbcTypeName:    &typeName,
+			})
+		}
+		ti.TableColumns = cols
+	}
+
+	return ti
+}
+
+func hasWildcards(likePattern *string) (bool, error) {
 	if likePattern == nil {
-		return false
+		return false, nil
 	}
 	isEscape := false
 	for i := 0; i < len(*likePattern); i++ {
@@ -412,12 +464,18 @@ func hasWildcards(likePattern *string) bool {
 		if !isEscape && ch == '\\' {
 			isEscape = true
 		} else if !isEscape && (ch == '_' || ch == '%') {
-			return true
+			return true, nil
 		} else {
 			isEscape = false
 		}
 	}
-	return false
+	if isEscape {
+		return false, adbc.Error{
+			Code: adbc.StatusInvalidArgument,
+			Msg:  "pattern cannot end with an escape",
+		}
+	}
+	return false, nil
 }
 
 func unescapeLikePattern(s string) string {

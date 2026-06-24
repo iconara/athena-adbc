@@ -730,14 +730,14 @@ func TestFunctional_ListSchemas_SkipsMetadataException(t *testing.T) {
 	assert.Empty(t, schemas)
 }
 
-// TestFunctional_GetTablesForDBSchema verifies the happy path: parameters are
-// forwarded correctly and returned tables are mapped to TableInfo.
+// TestFunctional_GetTablesForDBSchema verifies the happy path with a wildcard
+// filter: parameters are forwarded correctly and returned tables are mapped to TableInfo.
 func TestFunctional_GetTablesForDBSchema(t *testing.T) {
 	athenaMock := &mockAthenaClient{
 		listTableMetadataFn: func(_ context.Context, params *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
 			assert.Equal(t, "cat", *params.CatalogName)
 			assert.Equal(t, "db", *params.DatabaseName)
-			assert.Equal(t, "(?i)^tbl$", *params.Expression)
+			assert.Equal(t, "(?i)^tbl.*$", *params.Expression)
 			return &athenaSDK.ListTableMetadataOutput{
 				TableMetadataList: []types.TableMetadata{
 					{
@@ -750,7 +750,7 @@ func TestFunctional_GetTablesForDBSchema(t *testing.T) {
 	}
 
 	conn := newTestConn(t, athenaMock, nil)
-	tableFilter := "tbl"
+	tableFilter := "tbl%"
 	tables, err := conn.GetTablesForDBSchema(context.Background(), "cat", "db", &tableFilter, nil, false)
 	require.NoError(t, err)
 	require.Len(t, tables, 1)
@@ -800,17 +800,16 @@ func TestFunctional_GetTablesForDBSchema_WithColumns(t *testing.T) {
 
 func TestFunctional_GetTablesForDBSchema_WithColumnFilter(t *testing.T) {
 	athenaMock := &mockAthenaClient{
-		listTableMetadataFn: func(_ context.Context, _ *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
-			return &athenaSDK.ListTableMetadataOutput{
-				TableMetadataList: []types.TableMetadata{
-					{
-						Name:      strp("events"),
-						TableType: strp("EXTERNAL_TABLE"),
-						Columns: []types.Column{
-							{Name: strp("event_id"), Type: strp("bigint")},
-							{Name: strp("event_name"), Type: strp("varchar")},
-							{Name: strp("created_at"), Type: strp("timestamp")},
-						},
+		getTableMetadataFn: func(_ context.Context, params *athenaSDK.GetTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetTableMetadataOutput, error) {
+			assert.Equal(t, "events", *params.TableName)
+			return &athenaSDK.GetTableMetadataOutput{
+				TableMetadata: &types.TableMetadata{
+					Name:      strp("events"),
+					TableType: strp("EXTERNAL_TABLE"),
+					Columns: []types.Column{
+						{Name: strp("event_id"), Type: strp("bigint")},
+						{Name: strp("event_name"), Type: strp("varchar")},
+						{Name: strp("created_at"), Type: strp("timestamp")},
 					},
 				},
 			}, nil
@@ -836,17 +835,15 @@ func TestFunctional_GetTablesForDBSchema_WithColumnFilter(t *testing.T) {
 
 func TestFunctional_GetTablesForDBSchema_WithEmptyColumnFilter(t *testing.T) {
 	athenaMock := &mockAthenaClient{
-		listTableMetadataFn: func(_ context.Context, _ *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
-			return &athenaSDK.ListTableMetadataOutput{
-				TableMetadataList: []types.TableMetadata{
-					{
-						Name:      strp("events"),
-						TableType: strp("EXTERNAL_TABLE"),
-						Columns: []types.Column{
-							{Name: strp("event_id"), Type: strp("bigint")},
-							{Name: strp("event_name"), Type: strp("varchar")},
-							{Name: strp("created_at"), Type: strp("timestamp")},
-						},
+		getTableMetadataFn: func(_ context.Context, _ *athenaSDK.GetTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetTableMetadataOutput, error) {
+			return &athenaSDK.GetTableMetadataOutput{
+				TableMetadata: &types.TableMetadata{
+					Name:      strp("events"),
+					TableType: strp("EXTERNAL_TABLE"),
+					Columns: []types.Column{
+						{Name: strp("event_id"), Type: strp("bigint")},
+						{Name: strp("event_name"), Type: strp("varchar")},
+						{Name: strp("created_at"), Type: strp("timestamp")},
 					},
 				},
 			}, nil
@@ -880,7 +877,6 @@ func TestFunctional_GetTablesForDBSchema_NilTableFilter(t *testing.T) {
 func TestFunctional_GetTablesForDBSchema_Patterns(t *testing.T) {
 	examples := map[string]string{
 		"my_table":         "(?i)^my.table$",
-		"my\\_table":       "(?i)^my_table$",
 		"my\\\\_table":     "(?i)^my\\\\.table$",
 		"my\\\\\\\\_table": "(?i)^my\\\\\\\\.table$",
 		"_t":               "(?i)^.t$",
@@ -893,17 +889,11 @@ func TestFunctional_GetTablesForDBSchema_Patterns(t *testing.T) {
 		"%table":           "(?i)^.*table$",
 		"my%table":         "(?i)^my.*table$",
 		"my%%table":        "(?i)^my.*table$",
-		"my\\%table":       "(?i)^my%table$",
 		"my\\\\%table":     "(?i)^my\\\\.*table$",
-		"my\\\\\\%table":   "(?i)^my\\\\%table$",
 		"my\\\\\\\\%table": "(?i)^my\\\\\\\\.*table$",
 		"table%%%%":        "(?i)^table.*$",
 		"%%%%table":        "(?i)^.*table$",
-		"table?":           "(?i)^table\\?$",
 		"+abl%":            "(?i)^\\+abl.*$",
-		"t..le":            "(?i)^t\\.\\.le$",
-		"my<[{table}]>":    "(?i)^my\\<\\[\\{table\\}\\]\\>$",
-		"my|=-!$*^table":   "(?i)^my\\|\\=\\-\\!\\$\\*\\^table$",
 	}
 
 	for tableFilter, expectedExpression := range examples {
@@ -1014,4 +1004,42 @@ func TestFunctional_GetTablesForDBSchema_SkipsMetadataException(t *testing.T) {
 	tables, err := conn.GetTablesForDBSchema(context.Background(), "cat", "db", nil, nil, true)
 	require.NoError(t, err)
 	assert.Empty(t, tables)
+}
+
+// TestFunctional_GetTablesForDBSchema_WithNonWildcardName verifies that
+// GetTableMetadata is used instead of ListTableMetadata when the table filter
+// has no wildcards.
+func TestFunctional_GetTablesForDBSchema_WithNonWildcardName(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		getTableMetadataFn: func(_ context.Context, params *athenaSDK.GetTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetTableMetadataOutput, error) {
+			assert.Equal(t, "my_catalog", *params.CatalogName)
+			assert.Equal(t, "my_db", *params.DatabaseName)
+			assert.Equal(t, "my_table", *params.TableName)
+			return &athenaSDK.GetTableMetadataOutput{
+				TableMetadata: &types.TableMetadata{
+					Name:      strp("my_table"),
+					TableType: strp("EXTERNAL_TABLE"),
+					Columns: []types.Column{
+						{Name: strp("id"), Type: strp("bigint")},
+						{Name: strp("name"), Type: strp("varchar")},
+					},
+				},
+			}, nil
+		},
+		listTableMetadataFn: func(_ context.Context, _ *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
+			t.Fatal("ListTableMetadata should not be called")
+			return nil, nil
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, nil)
+	filter := "my\\_table"
+	tables, err := conn.GetTablesForDBSchema(context.Background(), "my_catalog", "my_db", &filter, nil, true)
+	require.NoError(t, err)
+	require.Len(t, tables, 1)
+	assert.Equal(t, "my_table", tables[0].TableName)
+	assert.Equal(t, "EXTERNAL_TABLE", tables[0].TableType)
+	require.Len(t, tables[0].TableColumns, 2)
+	assert.Equal(t, "id", tables[0].TableColumns[0].ColumnName)
+	assert.Equal(t, "name", tables[0].TableColumns[1].ColumnName)
 }
