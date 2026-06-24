@@ -32,6 +32,7 @@ import (
 // superset of all of them, so any value of this type can be passed directly
 // to those constructors.
 type athenaClientAPI interface {
+	GetDatabase(ctx context.Context, params *athenaSDK.GetDatabaseInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetDatabaseOutput, error)
 	GetDataCatalog(ctx context.Context, params *athenaSDK.GetDataCatalogInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetDataCatalogOutput, error)
 	GetTableMetadata(ctx context.Context, params *athenaSDK.GetTableMetadataInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetTableMetadataOutput, error)
 	ListDataCatalogs(ctx context.Context, params *athenaSDK.ListDataCatalogsInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.ListDataCatalogsOutput, error)

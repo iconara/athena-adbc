@@ -46,6 +46,7 @@ import (
 type mockAthenaClient struct {
 	startQueryExecutionFn func(ctx context.Context, params *athenaSDK.StartQueryExecutionInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.StartQueryExecutionOutput, error)
 	stopQueryExecutionFn  func(ctx context.Context, params *athenaSDK.StopQueryExecutionInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.StopQueryExecutionOutput, error)
+	getDatabaseFn         func(ctx context.Context, params *athenaSDK.GetDatabaseInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetDatabaseOutput, error)
 	getDataCatalogFn      func(ctx context.Context, params *athenaSDK.GetDataCatalogInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetDataCatalogOutput, error)
 	getQueryExecutionFn   func(ctx context.Context, params *athenaSDK.GetQueryExecutionInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetQueryExecutionOutput, error)
 	getQueryResultsFn     func(ctx context.Context, params *athenaSDK.GetQueryResultsInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetQueryResultsOutput, error)
@@ -63,6 +64,9 @@ func (m *mockAthenaClient) StopQueryExecution(ctx context.Context, params *athen
 		return m.stopQueryExecutionFn(ctx, params, optFns...)
 	}
 	return &athenaSDK.StopQueryExecutionOutput{}, nil
+}
+func (m *mockAthenaClient) GetDatabase(ctx context.Context, params *athenaSDK.GetDatabaseInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetDatabaseOutput, error) {
+	return m.getDatabaseFn(ctx, params, optFns...)
 }
 func (m *mockAthenaClient) GetDataCatalog(ctx context.Context, params *athenaSDK.GetDataCatalogInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetDataCatalogOutput, error) {
 	return m.getDataCatalogFn(ctx, params, optFns...)
@@ -686,7 +690,26 @@ func TestFunctional_ListSchemas_WithFilter(t *testing.T) {
 	schemas, err := conn.GetDBSchemasForCatalog(context.Background(), "AwsDataCatalog", strp("%schema%"))
 	require.NoError(t, err)
 	assert.Equal(t, []string{"another_schema", "another-schema", "schema_four"}, schemas)
-	schemas, err = conn.GetDBSchemasForCatalog(context.Background(), "AwsDataCatalog", strp("another\\_schema"))
+	schemas, err = conn.GetDBSchemasForCatalog(context.Background(), "AwsDataCatalog", strp("another\\_sch%"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"another_schema"}, schemas)
+}
+
+func TestFunctional_ListSchemas_WithNonWildcardName(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		getDatabaseFn: func(_ context.Context, params *athenaSDK.GetDatabaseInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetDatabaseOutput, error) {
+			assert.Equal(t, "AwsDataCatalog", *params.CatalogName)
+			assert.Equal(t, "another_schema", *params.DatabaseName)
+			return &athenaSDK.GetDatabaseOutput{
+				Database: &types.Database{
+					Name: strp("another_schema"),
+				},
+			}, nil
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, nil)
+	schemas, err := conn.GetDBSchemasForCatalog(context.Background(), "AwsDataCatalog", strp("another\\_schema"))
 	require.NoError(t, err)
 	assert.Equal(t, []string{"another_schema"}, schemas)
 }

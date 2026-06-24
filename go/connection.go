@@ -256,10 +256,42 @@ func (c *connectionImpl) GetDBSchemasForCatalog(ctx context.Context, catalog str
 	if catalog == "" || (schemaFilter != nil && *schemaFilter == "") {
 		return []string{}, nil
 	}
+
+	if schemaFilter != nil && !hasWildcards(schemaFilter) {
+		return c.checkSchema(ctx, catalog, schemaFilter)
+	}
+	return c.listSchemas(ctx, catalog, schemaFilter)
+}
+
+func (c *connectionImpl) checkSchema(ctx context.Context, catalog string, schemaFilter *string) ([]string, error) {
+	unescaped := unescapeLikePattern(*schemaFilter)
+
+	out, err := c.athenaClient.GetDatabase(ctx, &athenaSDK.GetDatabaseInput{
+		CatalogName:  &catalog,
+		DatabaseName: &unescaped,
+	})
+	if err != nil {
+		var metadataErr *athenaTypes.MetadataException
+		if errors.As(err, &metadataErr) {
+			return nil, nil
+		}
+		return nil, adbc.Error{
+			Code: adbc.StatusIO,
+			Msg:  fmt.Sprintf("GetDatabase failed: %v", err),
+		}
+	}
+	if out.Database != nil && out.Database.Name != nil {
+		return []string{*out.Database.Name}, nil
+	}
+	return nil, nil
+}
+
+func (c *connectionImpl) listSchemas(ctx context.Context, catalog string, schemaFilter *string) ([]string, error) {
 	schemaPattern, err := likePatternToRegex(schemaFilter)
 	if err != nil {
 		return nil, err
-	} else if schemaPattern == nil {
+	}
+	if schemaPattern == nil {
 		schemaPattern = regexp.MustCompile("^.*$")
 	}
 	input := &athenaSDK.ListDatabasesInput{
