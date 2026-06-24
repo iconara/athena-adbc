@@ -983,6 +983,40 @@ func TestFunctional_GetTablesForDBSchema_DefaultsTableType(t *testing.T) {
 	assert.Equal(t, "EXTERNAL_TABLE", tables[0].TableType)
 }
 
+// TestFunctional_GetTablesForDBSchema_NormalizesTableType verifies that
+// unknown table types are normalized to known types from ListTableTypes.
+func TestFunctional_GetTablesForDBSchema_NormalizesTableType(t *testing.T) {
+	athenaMock := &mockAthenaClient{
+		listTableMetadataFn: func(_ context.Context, _ *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
+			return &athenaSDK.ListTableMetadataOutput{
+				TableMetadataList: []types.TableMetadata{
+					{Name: strp("t1"), TableType: strp("EXTERNAL_TABLE")},
+					{Name: strp("t2"), TableType: strp("MANAGED_TABLE")},
+					{Name: strp("t3"), TableType: strp("VIRTUAL_VIEW")},
+					{Name: strp("t4"), TableType: strp("EXTERNAL")},
+					{Name: strp("t5"), TableType: strp("VIEW")},
+					{Name: strp("t6"), TableType: strp("TABLE")},
+					{Name: strp("t7"), TableType: strp("")},
+					{Name: strp("t8"), TableType: nil},
+				},
+			}, nil
+		},
+	}
+
+	conn := newTestConn(t, athenaMock, nil)
+	tables, err := conn.GetTablesForDBSchema(context.Background(), "cat", "db", nil, nil, false)
+	require.NoError(t, err)
+	require.Len(t, tables, 8)
+	assert.Equal(t, "EXTERNAL_TABLE", tables[0].TableType)
+	assert.Equal(t, "EXTERNAL_TABLE", tables[1].TableType)
+	assert.Equal(t, "VIRTUAL_VIEW", tables[2].TableType)
+	assert.Equal(t, "EXTERNAL_TABLE", tables[3].TableType)
+	assert.Equal(t, "EXTERNAL_TABLE", tables[4].TableType)
+	assert.Equal(t, "EXTERNAL_TABLE", tables[5].TableType)
+	assert.Equal(t, "EXTERNAL_TABLE", tables[6].TableType)
+	assert.Equal(t, "EXTERNAL_TABLE", tables[7].TableType)
+}
+
 // TestFunctional_GetTablesForDBSchema_APIError verifies that a ListTableMetadata
 // error is wrapped as an adbc.Error with StatusIO.
 func TestFunctional_GetTablesForDBSchema_APIError(t *testing.T) {
@@ -1056,7 +1090,7 @@ func TestFunctional_WorkGroup_GetDataCatalog(t *testing.T) {
 	athenaMock := &mockAthenaClient{
 		getDataCatalogFn: func(_ context.Context, params *athenaSDK.GetDataCatalogInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetDataCatalogOutput, error) {
 			require.NotNil(t, params.WorkGroup)
-		assert.Equal(t, "my-workgroup", *params.WorkGroup)
+			assert.Equal(t, "my-workgroup", *params.WorkGroup)
 			return &athenaSDK.GetDataCatalogOutput{
 				DataCatalog: &athenaTypes.DataCatalog{
 					Name: params.Name,
@@ -1080,7 +1114,7 @@ func TestFunctional_WorkGroup_ListDataCatalogs(t *testing.T) {
 	athenaMock := &mockAthenaClient{
 		listDataCatalogsFn: func(_ context.Context, params *athenaSDK.ListDataCatalogsInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListDataCatalogsOutput, error) {
 			require.NotNil(t, params.WorkGroup)
-		assert.Equal(t, "my-workgroup", *params.WorkGroup)
+			assert.Equal(t, "my-workgroup", *params.WorkGroup)
 			return &athenaSDK.ListDataCatalogsOutput{
 				DataCatalogsSummary: []types.DataCatalogSummary{
 					{CatalogName: strp("AwsDataCatalog")},
@@ -1104,7 +1138,7 @@ func TestFunctional_WorkGroup_GetDatabase(t *testing.T) {
 	athenaMock := &mockAthenaClient{
 		getDatabaseFn: func(_ context.Context, params *athenaSDK.GetDatabaseInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetDatabaseOutput, error) {
 			require.NotNil(t, params.WorkGroup)
-		assert.Equal(t, "my-workgroup", *params.WorkGroup)
+			assert.Equal(t, "my-workgroup", *params.WorkGroup)
 			return &athenaSDK.GetDatabaseOutput{
 				Database: &types.Database{Name: strp("my_db")},
 			}, nil
@@ -1121,7 +1155,7 @@ func TestFunctional_WorkGroup_ListDatabases(t *testing.T) {
 	athenaMock := &mockAthenaClient{
 		listDatabasesFn: func(_ context.Context, params *athenaSDK.ListDatabasesInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListDatabasesOutput, error) {
 			require.NotNil(t, params.WorkGroup)
-		assert.Equal(t, "my-workgroup", *params.WorkGroup)
+			assert.Equal(t, "my-workgroup", *params.WorkGroup)
 			return &athenaSDK.ListDatabasesOutput{
 				DatabaseList: []types.Database{{Name: strp("default")}},
 			}, nil
@@ -1138,7 +1172,7 @@ func TestFunctional_WorkGroup_GetTableMetadata(t *testing.T) {
 	athenaMock := &mockAthenaClient{
 		getTableMetadataFn: func(_ context.Context, params *athenaSDK.GetTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetTableMetadataOutput, error) {
 			require.NotNil(t, params.WorkGroup)
-		assert.Equal(t, "my-workgroup", *params.WorkGroup)
+			assert.Equal(t, "my-workgroup", *params.WorkGroup)
 			return &athenaSDK.GetTableMetadataOutput{
 				TableMetadata: &types.TableMetadata{
 					Name:      strp("my_table"),
@@ -1160,7 +1194,7 @@ func TestFunctional_WorkGroup_ListTableMetadata(t *testing.T) {
 	athenaMock := &mockAthenaClient{
 		listTableMetadataFn: func(_ context.Context, params *athenaSDK.ListTableMetadataInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error) {
 			require.NotNil(t, params.WorkGroup)
-		assert.Equal(t, "my-workgroup", *params.WorkGroup)
+			assert.Equal(t, "my-workgroup", *params.WorkGroup)
 			return &athenaSDK.ListTableMetadataOutput{
 				TableMetadataList: []types.TableMetadata{
 					{Name: strp("tbl1"), TableType: strp("EXTERNAL_TABLE")},

@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/adbc-drivers/driverbase-go/driverbase"
@@ -129,8 +130,15 @@ func (c *connectionImpl) SetCurrentDbSchema(schema string) error {
 
 // TableTypeLister interface implementation.
 
+const (
+	TableTypeExternal = "EXTERNAL_TABLE"
+	TableTypeView     = "VIRTUAL_VIEW"
+)
+
+var knownTableTypes = []string{TableTypeExternal, TableTypeView}
+
 func (c *connectionImpl) ListTableTypes(_ context.Context) ([]string, error) {
-	return []string{"EXTERNAL_TABLE", "MANAGED_TABLE", "VIRTUAL_VIEW"}, nil
+	return knownTableTypes, nil
 }
 
 // DbObjectsEnumerator interface implementation.
@@ -426,11 +434,15 @@ func (c *connectionImpl) listTables(ctx context.Context, catalogName string, sch
 	return tables, nil
 }
 
-func tableMetadataToTableInfo(tbl *athenaTypes.TableMetadata, columnFilter *string, includeColumns bool) driverbase.TableInfo {
-	tableType := "EXTERNAL_TABLE"
-	if tbl.TableType != nil {
-		tableType = *tbl.TableType
+func normalizeTableType(t *string) string {
+	if t == nil || !slices.Contains(knownTableTypes, *t) {
+		return TableTypeExternal
 	}
+	return *t
+}
+
+func tableMetadataToTableInfo(tbl *athenaTypes.TableMetadata, columnFilter *string, includeColumns bool) driverbase.TableInfo {
+	tableType := normalizeTableType(tbl.TableType)
 
 	ti := driverbase.TableInfo{
 		TableName: *tbl.Name,

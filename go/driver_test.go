@@ -236,11 +236,13 @@ func setupTestCatalog(glueClient *glueSDK.Client, schemaName string, createSchem
 	}
 
 	tables := []struct {
-		name    string
-		columns []glueTypes.Column
+		name      string
+		tableType string
+		columns   []glueTypes.Column
 	}{
 		{
-			name: "test_table_1",
+			name:      "test_table_1",
+			tableType: "EXTERNAL_TABLE",
 			columns: []glueTypes.Column{
 				{Name: strPtr("id"), Type: strPtr("bigint")},
 				{Name: strPtr("name"), Type: strPtr("string")},
@@ -248,7 +250,8 @@ func setupTestCatalog(glueClient *glueSDK.Client, schemaName string, createSchem
 			},
 		},
 		{
-			name: "test_table_2",
+			name:      "test_table_2",
+			tableType: "EXTERNAL_TABLE",
 			columns: []glueTypes.Column{
 				{Name: strPtr("user_id"), Type: strPtr("bigint")},
 				{Name: strPtr("score"), Type: strPtr("double")},
@@ -257,7 +260,16 @@ func setupTestCatalog(glueClient *glueSDK.Client, schemaName string, createSchem
 			},
 		},
 		{
-			name: "another_table",
+			name:      "another_table",
+			tableType: "EXTERNAL_TABLE",
+			columns: []glueTypes.Column{
+				{Name: strPtr("key"), Type: strPtr("string")},
+				{Name: strPtr("value"), Type: strPtr("string")},
+			},
+		},
+		{
+			name:      "a_view",
+			tableType: "VIRTUAL_VIEW",
 			columns: []glueTypes.Column{
 				{Name: strPtr("key"), Type: strPtr("string")},
 				{Name: strPtr("value"), Type: strPtr("string")},
@@ -484,11 +496,11 @@ func TestIntegration_ListSchemas_WithWildcards(t *testing.T) {
 	assert.NotContains(t, schemaNames, testSchemaName)
 }
 
-func listTables(t *testing.T, conn adbc.Connection, catalogName *string, schemaName *string, tableName *string) []string {
+func listTables(t *testing.T, conn adbc.Connection, catalogName *string, schemaName *string, tableName *string, tableTypes []string) []string {
 	rdr, err := conn.GetObjects(
 		context.Background(),
 		adbc.ObjectDepthTables,
-		catalogName, schemaName, tableName, nil, nil,
+		catalogName, schemaName, tableName, nil, tableTypes,
 	)
 	require.NoError(t, err)
 	defer rdr.Release()
@@ -512,14 +524,14 @@ func listTables(t *testing.T, conn adbc.Connection, catalogName *string, schemaN
 
 func TestIntegration_ListTables(t *testing.T) {
 	conn := integrationConn(t)
-	tableNames := listTables(t, conn, strPtr("AwsDataCatalog"), &testSchemaName, nil)
-	assert.Equal(t, []string{"another_table", "test_table_1", "test_table_2"}, tableNames)
+	tableNames := listTables(t, conn, strPtr("AwsDataCatalog"), &testSchemaName, nil, nil)
+	assert.Equal(t, []string{"a_view", "another_table", "test_table_1", "test_table_2"}, tableNames)
 }
 
 func TestIntegration_ListTables_WithWildcards(t *testing.T) {
 	conn := integrationConn(t)
 	schemaFilter := testSchemaName[:len(testSchemaName)-3] + "%"
-	tableNames := listTables(t, conn, strPtr("AwsDataCatalog"), &schemaFilter, strPtr("test%"))
+	tableNames := listTables(t, conn, strPtr("AwsDataCatalog"), &schemaFilter, strPtr("test%"), nil)
 	assert.Equal(t, []string{"test_table_1", "test_table_2"}, tableNames)
 }
 
