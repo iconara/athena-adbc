@@ -54,7 +54,7 @@ type databaseImpl struct {
 	testGlueClient glueClientAPI
 }
 
-func (d *databaseImpl) Open(ctx context.Context) (adbc.Connection, error) {
+func (d *databaseImpl) Open(ctx context.Context) (adbc.ConnectionWithContext, error) {
 	var athenaClient athenaClientAPI
 	var glueClient glueClientAPI
 	if d.testAthenaClient != nil {
@@ -143,7 +143,7 @@ func (d *databaseImpl) buildAWSConfig(ctx context.Context) (aws.Config, error) {
 	return cfg, nil
 }
 
-func (d *databaseImpl) GetOption(key string) (string, error) {
+func (d *databaseImpl) GetOption(ctx context.Context, key string) (string, error) {
 	switch key {
 	case OptionRegion:
 		return d.region, nil
@@ -166,20 +166,20 @@ func (d *databaseImpl) GetOption(key string) (string, error) {
 	case OptionProfileName:
 		return d.profileName, nil
 	default:
-		return d.DatabaseImplBase.GetOption(key)
+		return d.DatabaseImplBase.GetOption(ctx, key)
 	}
 }
 
-func (d *databaseImpl) SetOptions(options map[string]string) error {
+func (d *databaseImpl) SetOptions(ctx context.Context, options map[string]string) error {
 	for k, v := range options {
-		if err := d.SetOption(k, v); err != nil {
+		if err := d.SetOption(ctx, k, v); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (d *databaseImpl) SetOption(key, value string) error {
+func (d *databaseImpl) SetOption(ctx context.Context, key, value string) error {
 	switch key {
 	case OptionRegion:
 		d.region = value
@@ -210,7 +210,7 @@ func (d *databaseImpl) SetOption(key, value string) error {
 	case OptionProfileName:
 		d.profileName = value
 	default:
-		return d.DatabaseImplBase.SetOption(key, value)
+		return d.DatabaseImplBase.SetOption(ctx, key, value)
 	}
 	return nil
 }

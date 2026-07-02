@@ -55,13 +55,13 @@ func (c *connectionImpl) workGroup() *string {
 	return &c.db.workGroup
 }
 
-func (c *connectionImpl) Close() error {
+func (c *connectionImpl) Close(_ context.Context) error {
 	c.athenaClient = nil
 	c.db = nil
 	return nil
 }
 
-func (c *connectionImpl) NewStatement() (adbc.Statement, error) {
+func (c *connectionImpl) NewStatement(_ context.Context) (adbc.StatementWithContext, error) {
 	return &statementImpl{
 		StatementImplBase: driverbase.NewStatementImplBase(&c.ConnectionImplBase, c.ErrorHelper),
 		conn:              c,
@@ -110,20 +110,20 @@ func (c *connectionImpl) GetTableSchema(ctx context.Context, catalogName *string
 
 // CurrentNamespacer interface implementation.
 
-func (c *connectionImpl) GetCurrentCatalog() (string, error) {
+func (c *connectionImpl) GetCurrentCatalog(_ context.Context) (string, error) {
 	return c.catalog, nil
 }
 
-func (c *connectionImpl) GetCurrentDbSchema() (string, error) {
+func (c *connectionImpl) GetCurrentDbSchema(_ context.Context) (string, error) {
 	return c.schema, nil
 }
 
-func (c *connectionImpl) SetCurrentCatalog(catalog string) error {
+func (c *connectionImpl) SetCurrentCatalog(_ context.Context, catalog string) error {
 	c.catalog = catalog
 	return nil
 }
 
-func (c *connectionImpl) SetCurrentDbSchema(schema string) error {
+func (c *connectionImpl) SetCurrentDbSchema(_ context.Context, schema string) error {
 	c.schema = schema
 	return nil
 }

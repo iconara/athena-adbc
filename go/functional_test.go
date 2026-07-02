@@ -223,7 +223,7 @@ func TestFunctional_SimpleSelectQuery(t *testing.T) {
 	}
 
 	stmt := newTestStmt(t, mock)
-	require.NoError(t, stmt.SetSqlQuery("SELECT 42 AS n"))
+	require.NoError(t, stmt.SetSqlQuery(context.Background(),"SELECT 42 AS n"))
 
 	rdr, rowCount, err := stmt.ExecuteQuery(context.Background())
 	require.NoError(t, err)
@@ -261,7 +261,7 @@ func TestFunctional_QueryFailure(t *testing.T) {
 	}
 
 	stmt := newTestStmt(t, mock)
-	require.NoError(t, stmt.SetSqlQuery("SELECT * FROM nonexistent_table"))
+	require.NoError(t, stmt.SetSqlQuery(context.Background(),"SELECT * FROM nonexistent_table"))
 
 	_, _, err := stmt.ExecuteQuery(context.Background())
 	require.Error(t, err)
@@ -291,7 +291,7 @@ func TestFunctional_QueryCancelled(t *testing.T) {
 	}
 
 	stmt := newTestStmt(t, mock)
-	require.NoError(t, stmt.SetSqlQuery("SELECT 1"))
+	require.NoError(t, stmt.SetSqlQuery(context.Background(),"SELECT 1"))
 
 	_, _, err := stmt.ExecuteQuery(context.Background())
 	require.Error(t, err)
@@ -326,7 +326,7 @@ func TestFunctional_ContextCancellationMidPoll(t *testing.T) {
 	}
 
 	stmt := newTestStmt(t, mock)
-	require.NoError(t, stmt.SetSqlQuery("SELECT sleep(60)"))
+	require.NoError(t, stmt.SetSqlQuery(context.Background(),"SELECT sleep(60)"))
 
 	_, _, err := stmt.ExecuteQuery(ctx)
 	require.Error(t, err)
@@ -382,7 +382,7 @@ func TestFunctional_MultiPageResults(t *testing.T) {
 	}
 
 	stmt := newTestStmt(t, mock)
-	require.NoError(t, stmt.SetSqlQuery("SELECT id FROM t"))
+	require.NoError(t, stmt.SetSqlQuery(context.Background(),"SELECT id FROM t"))
 
 	rdr, _, err := stmt.ExecuteQuery(context.Background())
 	require.NoError(t, err)

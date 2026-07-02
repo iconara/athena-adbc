@@ -38,11 +38,11 @@ import (
 
 func strPtr(s string) *string { return &s }
 
-// getSetOptions is a helper to cast adbc.Database to adbc.GetSetOptions.
-func getSetOptions(t *testing.T, db adbc.Database) adbc.GetSetOptions {
+// getSetOptions is a helper to cast adbc.DatabaseWithContext to adbc.GetSetOptionsWithContext.
+func getSetOptions(t *testing.T, db adbc.DatabaseWithContext) adbc.GetSetOptionsWithContext {
 	t.Helper()
-	gso, ok := db.(adbc.GetSetOptions)
-	require.True(t, ok, "database does not implement adbc.GetSetOptions")
+	gso, ok := db.(adbc.GetSetOptionsWithContext)
+	require.True(t, ok, "database does not implement adbc.GetSetOptionsWithContext")
 	return gso
 }
 
@@ -55,16 +55,16 @@ func TestNewDatabase_NoOptions(t *testing.T) {
 	drv := athena.NewDriver(memory.DefaultAllocator)
 
 	// Should succeed even with no options (validation deferred to Open)
-	db, err := drv.NewDatabase(map[string]string{})
+	db, err := drv.NewDatabaseWithContext(context.Background(),map[string]string{})
 	require.NoError(t, err)
 	require.NotNil(t, db)
-	defer db.Close()
+	defer db.Close(context.Background())
 }
 
 func TestNewDatabase_WithOptions(t *testing.T) {
 	drv := athena.NewDriver(memory.DefaultAllocator)
 
-	db, err := drv.NewDatabase(map[string]string{
+	db, err := drv.NewDatabaseWithContext(context.Background(),map[string]string{
 		athena.OptionRegion:         "us-east-1",
 		athena.OptionCatalog:        "AwsDataCatalog",
 		athena.OptionSchema:         "default",
@@ -74,13 +74,13 @@ func TestNewDatabase_WithOptions(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, db)
-	defer db.Close()
+	defer db.Close(context.Background())
 }
 
 func TestNewDatabase_InvalidAuthType(t *testing.T) {
 	drv := athena.NewDriver(memory.DefaultAllocator)
 
-	_, err := drv.NewDatabase(map[string]string{
+	_, err := drv.NewDatabaseWithContext(context.Background(),map[string]string{
 		athena.OptionAuthType: "invalid_auth_type",
 	})
 	require.Error(t, err)
@@ -89,29 +89,31 @@ func TestNewDatabase_InvalidAuthType(t *testing.T) {
 func TestGetSetOption(t *testing.T) {
 	drv := athena.NewDriver(memory.DefaultAllocator)
 
-	db, err := drv.NewDatabase(map[string]string{
+	db, err := drv.NewDatabaseWithContext(context.Background(),map[string]string{
 		athena.OptionRegion:  "us-west-2",
 		athena.OptionCatalog: "MyCatalog",
 	})
 	require.NoError(t, err)
 	require.NotNil(t, db)
-	defer db.Close()
+	defer db.Close(context.Background())
 
 	gso := getSetOptions(t, db)
 
-	region, err := gso.GetOption(athena.OptionRegion)
+	ctx := context.Background()
+
+	region, err := gso.GetOption(ctx, athena.OptionRegion)
 	require.NoError(t, err)
 	assert.Equal(t, "us-west-2", region)
 
-	catalog, err := gso.GetOption(athena.OptionCatalog)
+	catalog, err := gso.GetOption(ctx, athena.OptionCatalog)
 	require.NoError(t, err)
 	assert.Equal(t, "MyCatalog", catalog)
 
 	// Update an option
-	err = gso.SetOption(athena.OptionRegion, "eu-west-1")
+	err = gso.SetOption(ctx, athena.OptionRegion, "eu-west-1")
 	require.NoError(t, err)
 
-	region, err = gso.GetOption(athena.OptionRegion)
+	region, err = gso.GetOption(ctx, athena.OptionRegion)
 	require.NoError(t, err)
 	assert.Equal(t, "eu-west-1", region)
 }
@@ -119,14 +121,14 @@ func TestGetSetOption(t *testing.T) {
 func TestAuthTypeAccessKey_MissingKey(t *testing.T) {
 	drv := athena.NewDriver(memory.DefaultAllocator)
 
-	db, err := drv.NewDatabase(map[string]string{
+	db, err := drv.NewDatabaseWithContext(context.Background(),map[string]string{
 		athena.OptionRegion:         "us-east-1",
 		athena.OptionOutputLocation: "s3://bucket/prefix/",
 		athena.OptionAuthType:       athena.AuthTypeAccessKey,
 		// Missing access key ID and secret key
 	})
 	require.NoError(t, err)
-	defer db.Close()
+	defer db.Close(context.Background())
 
 	// Open should fail because credentials are incomplete
 	_, err = db.Open(context.Background())
@@ -136,14 +138,14 @@ func TestAuthTypeAccessKey_MissingKey(t *testing.T) {
 func TestAuthTypeProfile_MissingProfileName(t *testing.T) {
 	drv := athena.NewDriver(memory.DefaultAllocator)
 
-	db, err := drv.NewDatabase(map[string]string{
+	db, err := drv.NewDatabaseWithContext(context.Background(),map[string]string{
 		athena.OptionRegion:         "us-east-1",
 		athena.OptionOutputLocation: "s3://bucket/prefix/",
 		athena.OptionAuthType:       athena.AuthTypeProfile,
 		// Missing profile name
 	})
 	require.NoError(t, err)
-	defer db.Close()
+	defer db.Close(context.Background())
 
 	_, err = db.Open(context.Background())
 	require.Error(t, err)
@@ -315,7 +317,7 @@ func teardownTestCatalog(glueClient *glueSDK.Client, schemaName string, deleteSc
 // integrationConn opens a real Athena connection and registers cleanup. Calls
 // setupCatalog to ensure test tables exist, then uses catalogSchema as the
 // default database. Skips the test if ADBC_ATHENA_TESTS is unset.
-func integrationConn(t *testing.T) adbc.Connection {
+func integrationConn(t *testing.T) adbc.ConnectionWithContext {
 	t.Helper()
 	if skipIntegrationTests() {
 		t.Skip("set ADBC_ATHENA_TESTS=1 to run integration tests")
@@ -336,25 +338,26 @@ func integrationConn(t *testing.T) adbc.Connection {
 	}
 
 	drv := athena.NewDriver(memory.DefaultAllocator)
-	db, err := drv.NewDatabase(opts)
+	db, err := drv.NewDatabaseWithContext(context.Background(),opts)
 	require.NoError(t, err)
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { db.Close(context.Background()) })
 
 	conn, err := db.Open(context.Background())
 	require.NoError(t, err)
-	t.Cleanup(func() { conn.Close() })
+	t.Cleanup(func() { conn.Close(context.Background()) })
 
 	return conn
 }
 
 // runQuery is a helper that executes sql and returns the first record.
-func runQuery(t *testing.T, conn adbc.Connection, sql string) arrow.Record {
+func runQuery(t *testing.T, conn adbc.ConnectionWithContext, sql string) arrow.Record {
 	t.Helper()
-	stmt, err := conn.NewStatement()
+	ctx := context.Background()
+	stmt, err := conn.NewStatement(ctx)
 	require.NoError(t, err)
-	t.Cleanup(func() { stmt.Close() })
+	t.Cleanup(func() { stmt.Close(ctx) })
 
-	require.NoError(t, stmt.SetSqlQuery(sql))
+	require.NoError(t, stmt.SetSqlQuery(ctx, sql))
 
 	rdr, _, err := stmt.ExecuteQuery(context.Background())
 	require.NoError(t, err)
@@ -421,7 +424,7 @@ SELECT
 	assert.NotEmpty(t, rec.Column(8).(*array.String).Value(0), "map_col should be non-empty")
 }
 
-func listCatalogs(t *testing.T, conn adbc.Connection, catalogFilter *string) []string {
+func listCatalogs(t *testing.T, conn adbc.ConnectionWithContext, catalogFilter *string) []string {
 	rdr, err := conn.GetObjects(
 		context.Background(),
 		adbc.ObjectDepthCatalogs,
@@ -457,7 +460,7 @@ func TestIntegration_ListCatalogs_WithWildcard(t *testing.T) {
 	assert.Equal(t, []string{"AwsDataCatalog"}, catalogNames)
 }
 
-func listSchemas(t *testing.T, conn adbc.Connection, catalogFilter *string, schemaFilter *string) []string {
+func listSchemas(t *testing.T, conn adbc.ConnectionWithContext, catalogFilter *string, schemaFilter *string) []string {
 	rdr, err := conn.GetObjects(
 		context.Background(),
 		adbc.ObjectDepthDBSchemas,
@@ -496,7 +499,7 @@ func TestIntegration_ListSchemas_WithWildcards(t *testing.T) {
 	assert.NotContains(t, schemaNames, testSchemaName)
 }
 
-func listTables(t *testing.T, conn adbc.Connection, catalogName *string, schemaName *string, tableName *string, tableTypes []string) []string {
+func listTables(t *testing.T, conn adbc.ConnectionWithContext, catalogName *string, schemaName *string, tableName *string, tableTypes []string) []string {
 	rdr, err := conn.GetObjects(
 		context.Background(),
 		adbc.ObjectDepthTables,
@@ -541,7 +544,7 @@ type columnInfo struct {
 	dataType string
 }
 
-func listColumns(t *testing.T, conn adbc.Connection, catalogName *string, schemaName *string, tableName *string, columnFilter *string) []columnInfo {
+func listColumns(t *testing.T, conn adbc.ConnectionWithContext, catalogName *string, schemaName *string, tableName *string, columnFilter *string) []columnInfo {
 	rdr, err := conn.GetObjects(
 		context.Background(),
 		adbc.ObjectDepthColumns,
