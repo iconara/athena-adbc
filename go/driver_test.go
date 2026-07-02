@@ -284,7 +284,7 @@ func setupTestCatalog(glueClient *glueSDK.Client, schemaName string, createSchem
 			DatabaseName: &schemaName,
 			TableInput: &glueTypes.TableInput{
 				Name:      strPtr(tbl.name),
-				TableType: strPtr("EXTERNAL_TABLE"),
+				TableType: strPtr(tbl.tableType),
 				StorageDescriptor: &glueTypes.StorageDescriptor{
 					Columns: tbl.columns,
 				},
@@ -536,6 +536,22 @@ func TestIntegration_ListTables_WithWildcards(t *testing.T) {
 	schemaFilter := testSchemaName[:len(testSchemaName)-3] + "%"
 	tableNames := listTables(t, conn, strPtr("AwsDataCatalog"), &schemaFilter, strPtr("test%"), nil)
 	assert.Equal(t, []string{"test_table_1", "test_table_2"}, tableNames)
+}
+
+func TestIntegration_ListTables_FilterByTableType(t *testing.T) {
+	conn := integrationConn(t)
+
+	// Only views
+	views := listTables(t, conn, strPtr("AwsDataCatalog"), &testSchemaName, nil, []string{"VIRTUAL_VIEW"})
+	assert.Equal(t, []string{"a_view"}, views)
+
+	// Only tables
+	tables := listTables(t, conn, strPtr("AwsDataCatalog"), &testSchemaName, nil, []string{"EXTERNAL_TABLE"})
+	assert.Equal(t, []string{"another_table", "test_table_1", "test_table_2"}, tables)
+
+	// Both types returns all
+	all := listTables(t, conn, strPtr("AwsDataCatalog"), &testSchemaName, nil, []string{"EXTERNAL_TABLE", "VIRTUAL_VIEW"})
+	assert.Equal(t, []string{"a_view", "another_table", "test_table_1", "test_table_2"}, all)
 }
 
 type columnInfo struct {
