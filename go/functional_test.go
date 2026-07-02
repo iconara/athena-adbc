@@ -25,6 +25,7 @@ import (
 
 	"github.com/adbc-drivers/driverbase-go/driverbase"
 	"github.com/apache/arrow-adbc/go/adbc"
+	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	athenaSDK "github.com/aws/aws-sdk-go-v2/service/athena"
 	"github.com/aws/aws-sdk-go-v2/service/athena/types"
@@ -51,6 +52,7 @@ type mockAthenaClient struct {
 	getQueryExecutionFn   func(ctx context.Context, params *athenaSDK.GetQueryExecutionInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetQueryExecutionOutput, error)
 	getQueryResultsFn     func(ctx context.Context, params *athenaSDK.GetQueryResultsInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetQueryResultsOutput, error)
 	getTableMetadataFn    func(ctx context.Context, params *athenaSDK.GetTableMetadataInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetTableMetadataOutput, error)
+	getWorkGroupFn        func(ctx context.Context, params *athenaSDK.GetWorkGroupInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetWorkGroupOutput, error)
 	listDataCatalogsFn    func(ctx context.Context, params *athenaSDK.ListDataCatalogsInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.ListDataCatalogsOutput, error)
 	listDatabasesFn       func(ctx context.Context, params *athenaSDK.ListDatabasesInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.ListDatabasesOutput, error)
 	listTableMetadataFn   func(ctx context.Context, params *athenaSDK.ListTableMetadataInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error)
@@ -79,6 +81,9 @@ func (m *mockAthenaClient) GetQueryResults(ctx context.Context, params *athenaSD
 }
 func (m *mockAthenaClient) GetTableMetadata(ctx context.Context, params *athenaSDK.GetTableMetadataInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetTableMetadataOutput, error) {
 	return m.getTableMetadataFn(ctx, params, optFns...)
+}
+func (m *mockAthenaClient) GetWorkGroup(ctx context.Context, params *athenaSDK.GetWorkGroupInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetWorkGroupOutput, error) {
+	return m.getWorkGroupFn(ctx, params, optFns...)
 }
 func (m *mockAthenaClient) ListDataCatalogs(ctx context.Context, params *athenaSDK.ListDataCatalogsInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.ListDataCatalogsOutput, error) {
 	return m.listDataCatalogsFn(ctx, params, optFns...)
@@ -1208,4 +1213,244 @@ func TestFunctional_WorkGroup_ListTableMetadata(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, tables, 1)
 	assert.Equal(t, "tbl1", tables[0].TableName)
+}
+
+// ---------------------------------------------------------------------------
+// GetInfo tests
+// ---------------------------------------------------------------------------
+
+// newTestWrappedConn opens a driverbase-wrapped connection with a mock Athena
+// client, using the same DriverInfo registrations as production. This allows
+// testing methods like GetInfo that live on the wrapper.
+func newTestWrappedConn(t testing.TB) adbc.ConnectionWithContext {
+	t.Helper()
+	return newTestWrappedConnWithMock(t, &mockAthenaClient{
+		getWorkGroupFn: func(_ context.Context, _ *athenaSDK.GetWorkGroupInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetWorkGroupOutput, error) {
+			return &athenaSDK.GetWorkGroupOutput{
+				WorkGroup: &types.WorkGroup{
+					Name: strp("primary"),
+					Configuration: &types.WorkGroupConfiguration{
+						EngineVersion: &types.EngineVersion{
+							EffectiveEngineVersion: strp("Athena engine version 3"),
+						},
+					},
+				},
+			}, nil
+		},
+	})
+}
+
+func newTestWrappedConnWithMock(t testing.TB, mock athenaClientAPI) adbc.ConnectionWithContext {
+	t.Helper()
+	info := driverbase.DefaultDriverInfo("Athena")
+	info.MustRegister(map[adbc.InfoCode]any{
+		adbc.InfoVendorName:         "Amazon Athena",
+		adbc.InfoVendorArrowVersion: infoDriverArrowVersion,
+		adbc.InfoVendorSql:          true,
+		adbc.InfoVendorSubstrait:    false,
+		adbc.InfoDriverName:         "Amazon Athena ADBC driver",
+		adbc.InfoDriverVersion:      driverVersion,
+		adbc.InfoDriverArrowVersion: infoDriverArrowVersion,
+	})
+	driverBase := driverbase.NewDriverImplBase(info, memory.DefaultAllocator)
+	dbBase, err := driverbase.NewDatabaseImplBase(context.Background(), &driverBase)
+	require.NoError(t, err)
+	db := &databaseImpl{
+		DatabaseImplBase: dbBase,
+		catalog:          "AwsDataCatalog",
+		schema:           "default",
+		outputLocation:   "s3://test-bucket/results/",
+		authType:         AuthTypeDefault,
+		testAthenaClient: mock,
+	}
+	conn, err := db.Open(context.Background())
+	require.NoError(t, err)
+	t.Cleanup(func() { conn.Close(context.Background()) })
+	return conn
+}
+
+// getInfoString is a helper that calls GetInfo for a single code and returns the string value.
+func getInfoString(t *testing.T, conn adbc.ConnectionWithContext, code adbc.InfoCode) string {
+	t.Helper()
+	rdr, err := conn.GetInfo(context.Background(), []adbc.InfoCode{code})
+	require.NoError(t, err)
+	defer rdr.Release()
+
+	require.True(t, rdr.Next())
+	rec := rdr.RecordBatch()
+	require.EqualValues(t, 1, rec.NumRows())
+
+	nameCol := rec.Column(0).(*array.Uint32)
+	require.EqualValues(t, code, nameCol.Value(0))
+
+	valueCol := rec.Column(1).(*array.DenseUnion)
+	return valueCol.Field(valueCol.ChildID(0)).(*array.String).Value(int(valueCol.ValueOffset(0)))
+}
+
+func TestFunctional_GetInfo_VendorName(t *testing.T) {
+	conn := newTestWrappedConn(t)
+	assert.Equal(t, "Amazon Athena", getInfoString(t, conn, adbc.InfoVendorName))
+}
+
+func TestFunctional_GetInfo_DriverName(t *testing.T) {
+	conn := newTestWrappedConn(t)
+	assert.Equal(t, "Amazon Athena ADBC driver", getInfoString(t, conn, adbc.InfoDriverName))
+}
+
+func TestFunctional_GetInfo_VendorSql(t *testing.T) {
+	conn := newTestWrappedConn(t)
+	rdr, err := conn.GetInfo(context.Background(), []adbc.InfoCode{adbc.InfoVendorSql})
+	require.NoError(t, err)
+	defer rdr.Release()
+
+	require.True(t, rdr.Next())
+	rec := rdr.RecordBatch()
+	require.EqualValues(t, 1, rec.NumRows())
+
+	valueCol := rec.Column(1).(*array.DenseUnion)
+	boolArr := valueCol.Field(valueCol.ChildID(0)).(*array.Boolean)
+	assert.True(t, boolArr.Value(int(valueCol.ValueOffset(0))))
+}
+
+func TestFunctional_GetInfo_VendorSubstrait(t *testing.T) {
+	conn := newTestWrappedConn(t)
+	rdr, err := conn.GetInfo(context.Background(), []adbc.InfoCode{adbc.InfoVendorSubstrait})
+	require.NoError(t, err)
+	defer rdr.Release()
+
+	require.True(t, rdr.Next())
+	rec := rdr.RecordBatch()
+	require.EqualValues(t, 1, rec.NumRows())
+
+	valueCol := rec.Column(1).(*array.DenseUnion)
+	boolArr := valueCol.Field(valueCol.ChildID(0)).(*array.Boolean)
+	assert.False(t, boolArr.Value(int(valueCol.ValueOffset(0))))
+}
+
+func TestFunctional_GetInfo_DriverVersion(t *testing.T) {
+	conn := newTestWrappedConn(t)
+	version := getInfoString(t, conn, adbc.InfoDriverVersion)
+	assert.Equal(t, driverVersion, version)
+}
+
+func TestFunctional_GetInfo_DriverArrowVersion(t *testing.T) {
+	conn := newTestWrappedConn(t)
+	version := getInfoString(t, conn, adbc.InfoDriverArrowVersion)
+	// In test binaries, debug.ReadBuildInfo() doesn't populate Deps, so the
+	// Arrow version may be empty. In built binaries it will be e.g. "v18.5.2".
+	assert.Equal(t, infoDriverArrowVersion, version)
+}
+
+func TestFunctional_GetInfo_DriverADBCVersion(t *testing.T) {
+	conn := newTestWrappedConn(t)
+	rdr, err := conn.GetInfo(context.Background(), []adbc.InfoCode{adbc.InfoDriverADBCVersion})
+	require.NoError(t, err)
+	defer rdr.Release()
+
+	require.True(t, rdr.Next())
+	rec := rdr.RecordBatch()
+	require.EqualValues(t, 1, rec.NumRows())
+
+	valueCol := rec.Column(1).(*array.DenseUnion)
+	int64Arr := valueCol.Field(valueCol.ChildID(0)).(*array.Int64)
+	assert.EqualValues(t, adbc.AdbcVersion1_1_0, int64Arr.Value(int(valueCol.ValueOffset(0))))
+}
+
+func TestFunctional_GetInfo_VendorVersion(t *testing.T) {
+	mock := &mockAthenaClient{
+		getWorkGroupFn: func(_ context.Context, params *athenaSDK.GetWorkGroupInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetWorkGroupOutput, error) {
+			assert.Equal(t, "primary", *params.WorkGroup)
+			return &athenaSDK.GetWorkGroupOutput{
+				WorkGroup: &types.WorkGroup{
+					Name: strp("primary"),
+					Configuration: &types.WorkGroupConfiguration{
+						EngineVersion: &types.EngineVersion{
+							EffectiveEngineVersion: strp("Athena engine version 3"),
+						},
+					},
+				},
+			}, nil
+		},
+	}
+	conn := newTestWrappedConnWithMock(t, mock)
+	assert.Equal(t, "Athena engine version 3", getInfoString(t, conn, adbc.InfoVendorVersion))
+}
+
+func TestFunctional_GetInfo_VendorVersion_CustomWorkGroup(t *testing.T) {
+	mock := &mockAthenaClient{
+		getWorkGroupFn: func(_ context.Context, params *athenaSDK.GetWorkGroupInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetWorkGroupOutput, error) {
+			assert.Equal(t, "my-workgroup", *params.WorkGroup)
+			return &athenaSDK.GetWorkGroupOutput{
+				WorkGroup: &types.WorkGroup{
+					Name: strp("my-workgroup"),
+					Configuration: &types.WorkGroupConfiguration{
+						EngineVersion: &types.EngineVersion{
+							EffectiveEngineVersion: strp("Athena engine version 2"),
+						},
+					},
+				},
+			}, nil
+		},
+	}
+
+	info := driverbase.DefaultDriverInfo("Athena")
+	info.MustRegister(map[adbc.InfoCode]any{
+		adbc.InfoVendorName:         "Amazon Athena",
+		adbc.InfoVendorArrowVersion: infoDriverArrowVersion,
+		adbc.InfoVendorSql:          true,
+		adbc.InfoVendorSubstrait:    false,
+		adbc.InfoDriverName:         "Amazon Athena ADBC driver",
+		adbc.InfoDriverVersion:      driverVersion,
+		adbc.InfoDriverArrowVersion: infoDriverArrowVersion,
+	})
+	driverBase := driverbase.NewDriverImplBase(info, memory.DefaultAllocator)
+	dbBase, err := driverbase.NewDatabaseImplBase(context.Background(), &driverBase)
+	require.NoError(t, err)
+	db := &databaseImpl{
+		DatabaseImplBase: dbBase,
+		catalog:          "AwsDataCatalog",
+		schema:           "default",
+		outputLocation:   "s3://test-bucket/results/",
+		workGroup:        "my-workgroup",
+		authType:         AuthTypeDefault,
+		testAthenaClient: mock,
+	}
+	conn, err := db.Open(context.Background())
+	require.NoError(t, err)
+	defer conn.Close(context.Background())
+
+	assert.Equal(t, "Athena engine version 2", getInfoString(t, conn, adbc.InfoVendorVersion))
+}
+
+func TestFunctional_GetInfo_VendorArrowVersion(t *testing.T) {
+	conn := newTestWrappedConn(t)
+	version := getInfoString(t, conn, adbc.InfoVendorArrowVersion)
+	assert.Equal(t, infoDriverArrowVersion, version)
+}
+
+func TestFunctional_GetInfo_AllCodes(t *testing.T) {
+	conn := newTestWrappedConn(t)
+	rdr, err := conn.GetInfo(context.Background(), nil)
+	require.NoError(t, err)
+	defer rdr.Release()
+
+	codes := make(map[adbc.InfoCode]bool)
+	for rdr.Next() {
+		rec := rdr.RecordBatch()
+		nameCol := rec.Column(0).(*array.Uint32)
+		for i := 0; i < nameCol.Len(); i++ {
+			codes[adbc.InfoCode(nameCol.Value(i))] = true
+		}
+	}
+	require.NoError(t, rdr.Err())
+
+	assert.True(t, codes[adbc.InfoVendorName], "missing InfoVendorName")
+	assert.True(t, codes[adbc.InfoVendorVersion], "missing InfoVendorVersion")
+	assert.True(t, codes[adbc.InfoVendorArrowVersion], "missing InfoVendorArrowVersion")
+	assert.True(t, codes[adbc.InfoVendorSql], "missing InfoVendorSql")
+	assert.True(t, codes[adbc.InfoVendorSubstrait], "missing InfoVendorSubstrait")
+	assert.True(t, codes[adbc.InfoDriverName], "missing InfoDriverName")
+	assert.True(t, codes[adbc.InfoDriverVersion], "missing InfoDriverVersion")
+	assert.True(t, codes[adbc.InfoDriverArrowVersion], "missing InfoDriverArrowVersion")
+	assert.True(t, codes[adbc.InfoDriverADBCVersion], "missing InfoDriverADBCVersion")
 }

@@ -89,6 +89,7 @@ func (d *databaseImpl) Open(ctx context.Context) (adbc.ConnectionWithContext, er
 		WithCurrentNamespacer(conn).
 		WithTableTypeLister(conn).
 		WithDbObjectsEnumerator(conn).
+		WithDriverInfoPreparer(conn).
 		Connection(), nil
 }
 

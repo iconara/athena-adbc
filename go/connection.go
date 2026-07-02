@@ -55,6 +55,35 @@ func (c *connectionImpl) workGroup() *string {
 	return &c.db.workGroup
 }
 
+func (c *connectionImpl) PrepareDriverInfo(ctx context.Context, infoCodes []adbc.InfoCode) error {
+	if len(infoCodes) == 0 {
+		return c.fetchVendorVersion(ctx)
+	}
+	for _, code := range infoCodes {
+		if code == adbc.InfoVendorVersion {
+			return c.fetchVendorVersion(ctx)
+		}
+	}
+	return nil
+}
+
+func (c *connectionImpl) fetchVendorVersion(ctx context.Context) error {
+	wg := "primary"
+	if c.db.workGroup != "" {
+		wg = c.db.workGroup
+	}
+	out, err := c.athenaClient.GetWorkGroup(ctx, &athenaSDK.GetWorkGroupInput{
+		WorkGroup: &wg,
+	})
+	if err != nil {
+		return err
+	}
+	if out.WorkGroup != nil && out.WorkGroup.Configuration != nil && out.WorkGroup.Configuration.EngineVersion != nil && out.WorkGroup.Configuration.EngineVersion.EffectiveEngineVersion != nil {
+		return c.DriverInfo.RegisterInfoCode(adbc.InfoVendorVersion, *out.WorkGroup.Configuration.EngineVersion.EffectiveEngineVersion)
+	}
+	return nil
+}
+
 func (c *connectionImpl) Close(_ context.Context) error {
 	c.athenaClient = nil
 	c.db = nil

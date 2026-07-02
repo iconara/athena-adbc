@@ -35,6 +35,7 @@ type athenaClientAPI interface {
 	GetDatabase(ctx context.Context, params *athenaSDK.GetDatabaseInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetDatabaseOutput, error)
 	GetDataCatalog(ctx context.Context, params *athenaSDK.GetDataCatalogInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetDataCatalogOutput, error)
 	GetTableMetadata(ctx context.Context, params *athenaSDK.GetTableMetadataInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetTableMetadataOutput, error)
+	GetWorkGroup(ctx context.Context, params *athenaSDK.GetWorkGroupInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.GetWorkGroupOutput, error)
 	ListDataCatalogs(ctx context.Context, params *athenaSDK.ListDataCatalogsInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.ListDataCatalogsOutput, error)
 	ListDatabases(ctx context.Context, params *athenaSDK.ListDatabasesInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.ListDatabasesOutput, error)
 	ListTableMetadata(ctx context.Context, params *athenaSDK.ListTableMetadataInput, optFns ...func(*athenaSDK.Options)) (*athenaSDK.ListTableMetadataOutput, error)
