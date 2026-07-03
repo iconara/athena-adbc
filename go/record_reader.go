@@ -117,6 +117,10 @@ func athenaTypeStringToArrow(t string) arrow.DataType {
 		return &arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: "UTC"}
 	case "varbinary", "binary":
 		return arrow.BinaryTypes.Binary
+	case "interval day to second":
+		return arrow.FixedWidthTypes.DayTimeInterval
+	case "interval year to month":
+		return arrow.FixedWidthTypes.MonthInterval
 	default:
 		// array, map, row, json — stringify
 		return arrow.BinaryTypes.String
@@ -229,11 +233,88 @@ func appendValue(bldr array.Builder, dt arrow.DataType, val string, isNull bool)
 			return err
 		}
 		bldr.(*array.Decimal128Builder).Append(n)
+	case arrow.INTERVAL_DAY_TIME:
+		v, err := parseDayTimeInterval(val)
+		if err != nil {
+			return err
+		}
+		bldr.(*array.DayTimeIntervalBuilder).Append(v)
+	case arrow.INTERVAL_MONTHS:
+		v, err := parseMonthInterval(val)
+		if err != nil {
+			return err
+		}
+		bldr.(*array.MonthIntervalBuilder).Append(v)
 	default:
 		// STRING covers varchar, string, char, decimal, array, map, row, json, etc.
 		bldr.(*array.StringBuilder).Append(val)
 	}
 	return nil
+}
+
+// parseDayTimeInterval parses Athena's "D HH:MM:SS.mmm" format into an Arrow DayTimeInterval.
+func parseDayTimeInterval(s string) (arrow.DayTimeInterval, error) {
+	spaceIdx := strings.IndexByte(s, ' ')
+	if spaceIdx < 0 {
+		return arrow.DayTimeInterval{}, fmt.Errorf("unexpected interval day to second format: %q", s)
+	}
+
+	days, err := strconv.ParseInt(s[:spaceIdx], 10, 32)
+	if err != nil {
+		return arrow.DayTimeInterval{}, fmt.Errorf("parsing days in interval: %w", err)
+	}
+
+	timePart := s[spaceIdx+1:]
+	if len(timePart) < 8 {
+		return arrow.DayTimeInterval{}, fmt.Errorf("unexpected time format in interval: %q", timePart)
+	}
+
+	hours, err := strconv.ParseInt(timePart[0:2], 10, 32)
+	if err != nil {
+		return arrow.DayTimeInterval{}, err
+	}
+	mins, err := strconv.ParseInt(timePart[3:5], 10, 32)
+	if err != nil {
+		return arrow.DayTimeInterval{}, err
+	}
+	secs, err := strconv.ParseInt(timePart[6:8], 10, 32)
+	if err != nil {
+		return arrow.DayTimeInterval{}, err
+	}
+
+	ms := hours*3600000 + mins*60000 + secs*1000
+	if len(timePart) > 8 && timePart[8] == '.' {
+		frac := timePart[9:]
+		for len(frac) < 3 {
+			frac += "0"
+		}
+		fracMs, err := strconv.ParseInt(frac[:3], 10, 32)
+		if err != nil {
+			return arrow.DayTimeInterval{}, err
+		}
+		ms += fracMs
+	}
+
+	return arrow.DayTimeInterval{Days: int32(days), Milliseconds: int32(ms)}, nil
+}
+
+// parseMonthInterval parses Athena's "Y-M" format into an Arrow MonthInterval (total months).
+func parseMonthInterval(s string) (arrow.MonthInterval, error) {
+	dashIdx := strings.IndexByte(s, '-')
+	if dashIdx < 0 {
+		return 0, fmt.Errorf("unexpected interval year to month format: %q", s)
+	}
+
+	years, err := strconv.ParseInt(s[:dashIdx], 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("parsing years in interval: %w", err)
+	}
+	months, err := strconv.ParseInt(s[dashIdx+1:], 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("parsing months in interval: %w", err)
+	}
+
+	return arrow.MonthInterval(years*12 + months), nil
 }
 
 // parseDateToDays parses "YYYY-MM-DD" and returns days since Unix epoch (1970-01-01).

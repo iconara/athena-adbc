@@ -52,6 +52,8 @@ func TestAthenaTypeStringToArrow(t *testing.T) {
 		{"timestamp with time zone", &arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: "UTC"}},
 		{"varbinary", arrow.BinaryTypes.Binary},
 		{"binary", arrow.BinaryTypes.Binary},
+		{"interval day to second", arrow.FixedWidthTypes.DayTimeInterval},
+		{"interval year to month", arrow.FixedWidthTypes.MonthInterval},
 		{"decimal", arrow.BinaryTypes.String},
 		{"array", arrow.BinaryTypes.String},
 		{"unknown_type", arrow.BinaryTypes.String},
@@ -401,6 +403,63 @@ func TestBuildRecordBatch_AllTypes(t *testing.T) {
 			func(t *testing.T, col arrow.Array) {
 				require.Equal(t, arrow.BinaryTypes.Binary, col.DataType())
 				assert.Equal(t, []byte("world"), col.(*array.Binary).Value(0))
+			},
+		},
+		{
+			"interval day to second",
+			"1 12:30:45.123",
+			func(t *testing.T, col arrow.Array) {
+				require.Equal(t, arrow.FixedWidthTypes.DayTimeInterval, col.DataType())
+				v := col.(*array.DayTimeInterval).Value(0)
+				assert.EqualValues(t, 1, v.Days)
+				assert.EqualValues(t, 12*3600*1000+30*60*1000+45*1000+123, v.Milliseconds)
+			},
+		},
+		{
+			"interval day to second",
+			"0 00:00:00.000",
+			func(t *testing.T, col arrow.Array) {
+				require.Equal(t, arrow.FixedWidthTypes.DayTimeInterval, col.DataType())
+				v := col.(*array.DayTimeInterval).Value(0)
+				assert.EqualValues(t, 0, v.Days)
+				assert.EqualValues(t, 0, v.Milliseconds)
+			},
+		},
+		{
+			"interval day to second",
+			"30 05:00:00.000",
+			func(t *testing.T, col arrow.Array) {
+				require.Equal(t, arrow.FixedWidthTypes.DayTimeInterval, col.DataType())
+				v := col.(*array.DayTimeInterval).Value(0)
+				assert.EqualValues(t, 30, v.Days)
+				assert.EqualValues(t, 5*3600*1000, v.Milliseconds)
+			},
+		},
+		{
+			"interval year to month",
+			"9-3",
+			func(t *testing.T, col arrow.Array) {
+				require.Equal(t, arrow.FixedWidthTypes.MonthInterval, col.DataType())
+				v := col.(*array.MonthInterval).Value(0)
+				assert.EqualValues(t, 9*12+3, v)
+			},
+		},
+		{
+			"interval year to month",
+			"0-0",
+			func(t *testing.T, col arrow.Array) {
+				require.Equal(t, arrow.FixedWidthTypes.MonthInterval, col.DataType())
+				v := col.(*array.MonthInterval).Value(0)
+				assert.EqualValues(t, 0, v)
+			},
+		},
+		{
+			"interval year to month",
+			"1-6",
+			func(t *testing.T, col arrow.Array) {
+				require.Equal(t, arrow.FixedWidthTypes.MonthInterval, col.DataType())
+				v := col.(*array.MonthInterval).Value(0)
+				assert.EqualValues(t, 18, v)
 			},
 		},
 		{
