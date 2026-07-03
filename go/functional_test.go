@@ -25,6 +25,7 @@ import (
 
 	"github.com/adbc-drivers/driverbase-go/driverbase"
 	"github.com/apache/arrow-adbc/go/adbc"
+	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	athenaSDK "github.com/aws/aws-sdk-go-v2/service/athena"
@@ -237,7 +238,7 @@ func TestFunctional_ExecuteSchema_AppendsLimit0(t *testing.T) {
 	}
 
 	stmt := newTestStmt(t, mock)
-	require.NoError(t, stmt.SetSqlQuery("SELECT id, name FROM users -- list users"))
+	require.NoError(t, stmt.SetSqlQuery(context.Background(), "SELECT id, name FROM users -- list users"))
 
 	_, err := stmt.ExecuteSchema(context.Background())
 	require.NoError(t, err)
@@ -271,7 +272,7 @@ func TestFunctional_ExecuteSchema_ReturnsSchema(t *testing.T) {
 	}
 
 	stmt := newTestStmt(t, mock)
-	require.NoError(t, stmt.SetSqlQuery("SELECT id, name FROM users"))
+	require.NoError(t, stmt.SetSqlQuery(context.Background(), "SELECT id, name FROM users"))
 
 	schema, err := stmt.ExecuteSchema(context.Background())
 	require.NoError(t, err)
@@ -288,6 +289,299 @@ func TestFunctional_ExecuteSchema_NoQuery(t *testing.T) {
 	_, err := stmt.ExecuteSchema(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no query set")
+}
+
+// ---------------------------------------------------------------------------
+// Prepared statement tests
+// ---------------------------------------------------------------------------
+
+func TestFunctional_Prepare(t *testing.T) {
+	stmt := newTestStmt(t, &mockAthenaClient{})
+	require.NoError(t, stmt.SetSqlQuery(context.Background(), "SELECT * FROM t WHERE id = ? AND name = ?"))
+
+	err := stmt.Prepare(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 2, stmt.paramCount)
+	assert.True(t, stmt.prepared)
+}
+
+func TestFunctional_Prepare_NoPlaceholders(t *testing.T) {
+	stmt := newTestStmt(t, &mockAthenaClient{})
+	require.NoError(t, stmt.SetSqlQuery(context.Background(), "SELECT 1"))
+
+	err := stmt.Prepare(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 0, stmt.paramCount)
+}
+
+func TestFunctional_Prepare_SkipsQuotedQuestionMarks(t *testing.T) {
+	stmt := newTestStmt(t, &mockAthenaClient{})
+	require.NoError(t, stmt.SetSqlQuery(context.Background(), "SELECT '?' AS q, id FROM t WHERE x = ?"))
+
+	err := stmt.Prepare(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, stmt.paramCount)
+}
+
+func TestFunctional_Prepare_SkipsDoubleQuotedQuestionMarks(t *testing.T) {
+	stmt := newTestStmt(t, &mockAthenaClient{})
+	require.NoError(t, stmt.SetSqlQuery(context.Background(), "SELECT \"?\" AS q, id FROM t WHERE x = ?"))
+
+	err := stmt.Prepare(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, stmt.paramCount)
+}
+
+func TestFunctional_Prepare_SkipsQuestionMarksInComments(t *testing.T) {
+	stmt := newTestStmt(t, &mockAthenaClient{})
+	require.NoError(t, stmt.SetSqlQuery(context.Background(), "SELECT /* ? AS q, */ -- ? AS n\nid FROM t WHERE x = ?"))
+
+	err := stmt.Prepare(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, stmt.paramCount)
+}
+
+func TestFunctional_GetParameterSchema(t *testing.T) {
+	stmt := newTestStmt(t, &mockAthenaClient{})
+	require.NoError(t, stmt.SetSqlQuery(context.Background(), "SELECT * FROM t WHERE a = ? AND b = ?"))
+	require.NoError(t, stmt.Prepare(context.Background()))
+
+	schema, err := stmt.GetParameterSchema(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 2, schema.NumFields())
+	assert.Equal(t, "$1", schema.Field(0).Name)
+	assert.Equal(t, "$2", schema.Field(1).Name)
+	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(0).Type)
+	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(1).Type)
+}
+
+func TestFunctional_GetParameterSchema_NotPrepared(t *testing.T) {
+	stmt := newTestStmt(t, &mockAthenaClient{})
+	require.NoError(t, stmt.SetSqlQuery(context.Background(), "SELECT ?"))
+
+	_, err := stmt.GetParameterSchema(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not prepared")
+}
+
+func TestFunctional_Bind_PassesParameters(t *testing.T) {
+	const execID = "exec-bind-001"
+	var capturedParams []string
+	mock := &mockAthenaClient{
+		startQueryExecutionFn: func(_ context.Context, params *athenaSDK.StartQueryExecutionInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.StartQueryExecutionOutput, error) {
+			capturedParams = params.ExecutionParameters
+			return &athenaSDK.StartQueryExecutionOutput{QueryExecutionId: strp(execID)}, nil
+		},
+		getQueryExecutionFn: succeedAfterN(0),
+		getQueryResultsFn: func(_ context.Context, _ *athenaSDK.GetQueryResultsInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetQueryResultsOutput, error) {
+			return &athenaSDK.GetQueryResultsOutput{
+				ResultSet: &types.ResultSet{
+					ResultSetMetadata: &types.ResultSetMetadata{
+						ColumnInfo: []types.ColumnInfo{{Name: strp("val"), Type: strp("varchar")}},
+					},
+					Rows: []types.Row{
+						{Data: []types.Datum{{VarCharValue: strp("val")}}},
+						{Data: []types.Datum{{VarCharValue: strp("hello")}}},
+					},
+				},
+			}, nil
+		},
+	}
+
+	stmt := newTestStmt(t, mock)
+	require.NoError(t, stmt.SetSqlQuery(context.Background(), "SELECT ? AS val"))
+	require.NoError(t, stmt.Prepare(context.Background()))
+
+	bldr := array.NewRecordBuilder(memory.DefaultAllocator, arrow.NewSchema(
+		[]arrow.Field{{Name: "$1", Type: arrow.BinaryTypes.String, Nullable: true}}, nil,
+	))
+	bldr.Field(0).(*array.StringBuilder).Append("hello")
+	rec := bldr.NewRecordBatch()
+	defer rec.Release()
+
+	require.NoError(t, stmt.Bind(context.Background(), rec))
+
+	rdr, _, err := stmt.ExecuteQuery(context.Background())
+	require.NoError(t, err)
+	defer rdr.Release()
+
+	assert.Equal(t, []string{"'hello'"}, capturedParams)
+}
+
+func TestFunctional_Bind_NullParameter(t *testing.T) {
+	const execID = "exec-bind-null"
+	var capturedParams []string
+	mock := &mockAthenaClient{
+		startQueryExecutionFn: func(_ context.Context, params *athenaSDK.StartQueryExecutionInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.StartQueryExecutionOutput, error) {
+			capturedParams = params.ExecutionParameters
+			return &athenaSDK.StartQueryExecutionOutput{QueryExecutionId: strp(execID)}, nil
+		},
+		getQueryExecutionFn: succeedAfterN(0),
+		getQueryResultsFn: func(_ context.Context, _ *athenaSDK.GetQueryResultsInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetQueryResultsOutput, error) {
+			return &athenaSDK.GetQueryResultsOutput{
+				ResultSet: &types.ResultSet{
+					ResultSetMetadata: &types.ResultSetMetadata{
+						ColumnInfo: []types.ColumnInfo{{Name: strp("val"), Type: strp("varchar")}},
+					},
+					Rows: []types.Row{{Data: []types.Datum{{VarCharValue: strp("val")}}}},
+				},
+			}, nil
+		},
+	}
+
+	stmt := newTestStmt(t, mock)
+	require.NoError(t, stmt.SetSqlQuery(context.Background(), "SELECT ?"))
+	require.NoError(t, stmt.Prepare(context.Background()))
+
+	bldr := array.NewRecordBuilder(memory.DefaultAllocator, arrow.NewSchema(
+		[]arrow.Field{{Name: "$1", Type: arrow.BinaryTypes.String, Nullable: true}}, nil,
+	))
+	bldr.Field(0).(*array.StringBuilder).AppendNull()
+	rec := bldr.NewRecordBatch()
+	defer rec.Release()
+
+	require.NoError(t, stmt.Bind(context.Background(), rec))
+
+	rdr, _, err := stmt.ExecuteQuery(context.Background())
+	require.NoError(t, err)
+	defer rdr.Release()
+
+	assert.Equal(t, []string{"NULL"}, capturedParams)
+}
+
+func TestFunctional_Bind_WrongColumnCount(t *testing.T) {
+	stmt := newTestStmt(t, &mockAthenaClient{})
+	require.NoError(t, stmt.SetSqlQuery(context.Background(), "SELECT ? AS a, ? AS b"))
+	require.NoError(t, stmt.Prepare(context.Background()))
+
+	bldr := array.NewRecordBuilder(memory.DefaultAllocator, arrow.NewSchema(
+		[]arrow.Field{{Name: "$1", Type: arrow.BinaryTypes.String, Nullable: true}}, nil,
+	))
+	bldr.Field(0).(*array.StringBuilder).Append("only_one")
+	rec := bldr.NewRecordBatch()
+	defer rec.Release()
+
+	err := stmt.Bind(context.Background(), rec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expected 2 parameters")
+}
+
+func TestFunctional_Bind_ClearedAfterExecution(t *testing.T) {
+	const execID = "exec-bind-002"
+	callCount := 0
+	mock := &mockAthenaClient{
+		startQueryExecutionFn: func(_ context.Context, params *athenaSDK.StartQueryExecutionInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.StartQueryExecutionOutput, error) {
+			callCount++
+			if callCount == 2 {
+				assert.Nil(t, params.ExecutionParameters, "parameters should be cleared on second execution")
+			}
+			return &athenaSDK.StartQueryExecutionOutput{QueryExecutionId: strp(execID)}, nil
+		},
+		getQueryExecutionFn: succeedAfterN(0),
+		getQueryResultsFn: func(_ context.Context, _ *athenaSDK.GetQueryResultsInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetQueryResultsOutput, error) {
+			return &athenaSDK.GetQueryResultsOutput{
+				ResultSet: &types.ResultSet{
+					ResultSetMetadata: &types.ResultSetMetadata{
+						ColumnInfo: []types.ColumnInfo{{Name: strp("val"), Type: strp("varchar")}},
+					},
+					Rows: []types.Row{
+						{Data: []types.Datum{{VarCharValue: strp("val")}}},
+					},
+				},
+			}, nil
+		},
+	}
+
+	stmt := newTestStmt(t, mock)
+	require.NoError(t, stmt.SetSqlQuery(context.Background(), "SELECT ? AS val"))
+	require.NoError(t, stmt.Prepare(context.Background()))
+
+	bldr := array.NewRecordBuilder(memory.DefaultAllocator, arrow.NewSchema(
+		[]arrow.Field{{Name: "$1", Type: arrow.BinaryTypes.String, Nullable: true}}, nil,
+	))
+	bldr.Field(0).(*array.StringBuilder).Append("first")
+	rec := bldr.NewRecordBatch()
+	defer rec.Release()
+
+	require.NoError(t, stmt.Bind(context.Background(), rec))
+
+	rdr, _, err := stmt.ExecuteQuery(context.Background())
+	require.NoError(t, err)
+	rdr.Release()
+
+	// Second execution without Bind — params should be nil
+	rdr, _, err = stmt.ExecuteQuery(context.Background())
+	require.NoError(t, err)
+	rdr.Release()
+}
+
+func TestFunctional_Bind_LiteralFormatting(t *testing.T) {
+	tests := []struct {
+		name     string
+		dt       arrow.DataType
+		append   func(bldr array.Builder)
+		expected string
+	}{
+		{"tinyint", arrow.PrimitiveTypes.Int8, func(b array.Builder) { b.(*array.Int8Builder).Append(42) }, "42"},
+		{"smallint", arrow.PrimitiveTypes.Int16, func(b array.Builder) { b.(*array.Int16Builder).Append(1000) }, "1000"},
+		{"int", arrow.PrimitiveTypes.Int32, func(b array.Builder) { b.(*array.Int32Builder).Append(123456) }, "123456"},
+		{"bigint", arrow.PrimitiveTypes.Int64, func(b array.Builder) { b.(*array.Int64Builder).Append(9876543210) }, "9876543210"},
+		{"real", arrow.PrimitiveTypes.Float32, func(b array.Builder) { b.(*array.Float32Builder).Append(3.14) }, "3.14"},
+		{"double", arrow.PrimitiveTypes.Float64, func(b array.Builder) { b.(*array.Float64Builder).Append(2.718281828) }, "2.718281828"},
+		{"boolean_true", arrow.FixedWidthTypes.Boolean, func(b array.Builder) { b.(*array.BooleanBuilder).Append(true) }, "TRUE"},
+		{"boolean_false", arrow.FixedWidthTypes.Boolean, func(b array.Builder) { b.(*array.BooleanBuilder).Append(false) }, "FALSE"},
+		{"string", arrow.BinaryTypes.String, func(b array.Builder) { b.(*array.StringBuilder).Append("hello") }, "'hello'"},
+		{"string_with_quote", arrow.BinaryTypes.String, func(b array.Builder) { b.(*array.StringBuilder).Append("it's") }, "'it''s'"},
+		{"date", arrow.FixedWidthTypes.Date32, func(b array.Builder) { b.(*array.Date32Builder).Append(arrow.Date32(20637)) }, "DATE '2026-07-03'"},
+		{"timestamp", &arrow.TimestampType{Unit: arrow.Microsecond}, func(b array.Builder) { b.(*array.TimestampBuilder).Append(arrow.Timestamp(1783080000000000)) }, "TIMESTAMP '2026-07-03 12:00:00.000000'"},
+		{"timestamp_tz", &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}, func(b array.Builder) { b.(*array.TimestampBuilder).Append(arrow.Timestamp(1783080000000000)) }, "TIMESTAMP '2026-07-03 12:00:00.000000 UTC'"},
+		{"time", arrow.FixedWidthTypes.Time64us, func(b array.Builder) { b.(*array.Time64Builder).Append(arrow.Time64(45045123456)) }, "TIME '12:30:45.123456'"},
+		{"decimal", &arrow.Decimal128Type{Precision: 5, Scale: 2}, func(b array.Builder) { b.AppendValueFromString("3.14") }, "DECIMAL '3.14'"},
+		{"binary", arrow.BinaryTypes.Binary, func(b array.Builder) { b.(*array.BinaryBuilder).Append([]byte{0xab, 0xcd, 0xef}) }, "X'ab cd ef'"},
+		{"null", arrow.BinaryTypes.String, func(b array.Builder) { b.AppendNull() }, "NULL"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var capturedParams []string
+			mock := &mockAthenaClient{
+				startQueryExecutionFn: func(_ context.Context, params *athenaSDK.StartQueryExecutionInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.StartQueryExecutionOutput, error) {
+					capturedParams = params.ExecutionParameters
+					return &athenaSDK.StartQueryExecutionOutput{QueryExecutionId: strp("exec-lit")}, nil
+				},
+				getQueryExecutionFn: succeedAfterN(0),
+				getQueryResultsFn: func(_ context.Context, _ *athenaSDK.GetQueryResultsInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetQueryResultsOutput, error) {
+					return &athenaSDK.GetQueryResultsOutput{
+						ResultSet: &types.ResultSet{
+							ResultSetMetadata: &types.ResultSetMetadata{
+								ColumnInfo: []types.ColumnInfo{{Name: strp("val"), Type: strp("varchar")}},
+							},
+							Rows: []types.Row{{Data: []types.Datum{{VarCharValue: strp("val")}}}},
+						},
+					}, nil
+				},
+			}
+
+			stmt := newTestStmt(t, mock)
+			require.NoError(t, stmt.SetSqlQuery(context.Background(), "SELECT ?"))
+			require.NoError(t, stmt.Prepare(context.Background()))
+
+			schema := arrow.NewSchema([]arrow.Field{{Name: "$1", Type: tt.dt, Nullable: true}}, nil)
+			bldr := array.NewRecordBuilder(memory.DefaultAllocator, schema)
+			tt.append(bldr.Field(0))
+			rec := bldr.NewRecord()
+			defer rec.Release()
+
+			require.NoError(t, stmt.Bind(context.Background(), rec))
+
+			rdr, _, err := stmt.ExecuteQuery(context.Background())
+			require.NoError(t, err)
+			rdr.Release()
+
+			require.Len(t, capturedParams, 1)
+			assert.Equal(t, tt.expected, capturedParams[0])
+		})
+	}
 }
 
 // TestFunctional_SimpleSelectQuery exercises the full execution path:

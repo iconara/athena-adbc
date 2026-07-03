@@ -20,6 +20,7 @@ package athena
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -35,8 +36,11 @@ import (
 type statementImpl struct {
 	driverbase.StatementImplBase
 
-	conn  *connectionImpl
-	query string
+	conn        *connectionImpl
+	query       string
+	prepared    bool
+	paramCount  int
+	boundParams []string
 }
 
 func (s *statementImpl) Base() *driverbase.StatementImplBase {
@@ -64,10 +68,50 @@ func (s *statementImpl) SetSqlQuery(_ context.Context, query string) error {
 }
 
 func (s *statementImpl) Prepare(_ context.Context) error {
-	return adbc.Error{
-		Code: adbc.StatusNotImplemented,
-		Msg:  "[athena] Athena does not support prepared statements",
+	if s.query == "" {
+		return adbc.Error{
+			Code: adbc.StatusInvalidState,
+			Msg:  "[athena] no query set",
+		}
 	}
+	s.paramCount = countPlaceholders(s.query)
+	s.prepared = true
+	return nil
+}
+
+// countPlaceholders counts `?` placeholders in a SQL string, skipping those
+// inside single-quoted strings, double-quoted identifiers, or comments.
+func countPlaceholders(query string) int {
+	count := 0
+	for i := 0; i < len(query); i++ {
+		c := query[i]
+		switch {
+		case c == '\'' :
+			i++
+			for i < len(query) && query[i] != '\'' {
+				i++
+			}
+		case c == '"':
+			i++
+			for i < len(query) && query[i] != '"' {
+				i++
+			}
+		case c == '-' && i+1 < len(query) && query[i+1] == '-':
+			i += 2
+			for i < len(query) && query[i] != '\n' {
+				i++
+			}
+		case c == '/' && i+1 < len(query) && query[i+1] == '*':
+			i += 2
+			for i+1 < len(query) && !(query[i] == '*' && query[i+1] == '/') {
+				i++
+			}
+			i++
+		case c == '?':
+			count++
+		}
+	}
+	return count
 }
 
 func (s *statementImpl) ExecuteSchema(ctx context.Context) (*arrow.Schema, error) {
@@ -191,6 +235,10 @@ func (s *statementImpl) startQuery(ctx context.Context) (*string, error) {
 	}
 	if s.conn.db.workGroup != "" {
 		input.WorkGroup = &s.conn.db.workGroup
+	}
+	if s.boundParams != nil {
+		input.ExecutionParameters = s.boundParams
+		s.boundParams = nil
 	}
 
 	out, err := s.conn.athenaClient.StartQueryExecution(ctx, input)
@@ -414,10 +462,82 @@ func (s *statementImpl) buildPagedRecordReader(ctx context.Context, execID *stri
 	return newPagingRecordReader(ctx, s.conn.Alloc, schema, paginator, firstPageRows), nil
 }
 
-func (s *statementImpl) Bind(_ context.Context, _ arrow.Record) error {
-	return adbc.Error{
-		Code: adbc.StatusNotImplemented,
-		Msg:  "[athena] Bind not implemented",
+func (s *statementImpl) Bind(_ context.Context, rec arrow.RecordBatch) error {
+	if !s.prepared {
+		return adbc.Error{
+			Code: adbc.StatusInvalidState,
+			Msg:  "[athena] statement not prepared",
+		}
+	}
+	if int(rec.NumCols()) != s.paramCount {
+		return adbc.Error{
+			Code: adbc.StatusInvalidArgument,
+			Msg:  fmt.Sprintf("[athena] expected %d parameters, got %d columns", s.paramCount, rec.NumCols()),
+		}
+	}
+	if rec.NumRows() != 1 {
+		return adbc.Error{
+			Code: adbc.StatusInvalidArgument,
+			Msg:  fmt.Sprintf("[athena] expected exactly 1 row, got %d", rec.NumRows()),
+		}
+	}
+
+	params := make([]string, s.paramCount)
+	for i := 0; i < s.paramCount; i++ {
+		col := rec.Column(i)
+		if col.IsNull(0) {
+			params[i] = "NULL"
+		} else {
+			params[i] = formatParamLiteral(col, 0)
+		}
+	}
+	s.boundParams = params
+	return nil
+}
+
+func formatParamLiteral(col arrow.Array, row int) string {
+	switch c := col.(type) {
+	case *array.Boolean:
+		if c.Value(row) {
+			return "TRUE"
+		}
+		return "FALSE"
+	case *array.String:
+		return "'" + strings.ReplaceAll(c.Value(row), "'", "''") + "'"
+	case *array.Date32:
+		d := c.Value(row).ToTime()
+		return fmt.Sprintf("DATE '%s'", d.Format("2006-01-02"))
+	case *array.Timestamp:
+		dt := col.DataType().(*arrow.TimestampType)
+		ts := c.Value(row).ToTime(dt.Unit)
+		if dt.TimeZone != "" {
+			return fmt.Sprintf("TIMESTAMP '%s %s'", ts.Format("2006-01-02 15:04:05.000000"), dt.TimeZone)
+		}
+		return fmt.Sprintf("TIMESTAMP '%s'", ts.Format("2006-01-02 15:04:05.000000"))
+	case *array.Time64:
+		us := int64(c.Value(row))
+		h := us / 3_600_000_000
+		us -= h * 3_600_000_000
+		m := us / 60_000_000
+		us -= m * 60_000_000
+		s := us / 1_000_000
+		us -= s * 1_000_000
+		return fmt.Sprintf("TIME '%02d:%02d:%02d.%06d'", h, m, s, us)
+	case *array.Decimal128:
+		return "DECIMAL '" + col.ValueStr(row) + "'"
+	case *array.Binary:
+		b := c.Value(row)
+		hex := fmt.Sprintf("%x", b)
+		spaced := ""
+		for i := 0; i < len(hex); i += 2 {
+			if i > 0 {
+				spaced += " "
+			}
+			spaced += hex[i : i+2]
+		}
+		return "X'" + spaced + "'"
+	default:
+		return col.ValueStr(row)
 	}
 }
 
@@ -429,10 +549,21 @@ func (s *statementImpl) BindStream(_ context.Context, _ array.RecordReader) erro
 }
 
 func (s *statementImpl) GetParameterSchema(_ context.Context) (*arrow.Schema, error) {
-	return nil, adbc.Error{
-		Code: adbc.StatusNotImplemented,
-		Msg:  "[athena] parameter schema detection not implemented",
+	if !s.prepared {
+		return nil, adbc.Error{
+			Code: adbc.StatusInvalidState,
+			Msg:  "[athena] statement not prepared",
+		}
 	}
+	fields := make([]arrow.Field, s.paramCount)
+	for i := range fields {
+		fields[i] = arrow.Field{
+			Name:     fmt.Sprintf("$%d", i+1),
+			Type:     arrow.BinaryTypes.String,
+			Nullable: true,
+		}
+	}
+	return arrow.NewSchema(fields, nil), nil
 }
 
 func (s *statementImpl) SetSubstraitPlan(_ context.Context, _ []byte) error {

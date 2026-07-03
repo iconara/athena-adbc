@@ -707,3 +707,128 @@ func TestIntegration_ListColumns_WithWildcards(t *testing.T) {
 	assert.Equal(t, columnInfo{"test_table_1", "created_at", "timestamp"}, columns[0])
 	assert.Equal(t, columnInfo{"test_table_2", "updated_at", "timestamp"}, columns[1])
 }
+
+func TestIntegration_ParameterizedQuery(t *testing.T) {
+	conn := integrationConn(t)
+
+	stmt, err := conn.NewStatement(context.Background())
+	require.NoError(t, err)
+	defer stmt.Close(context.Background())
+
+	require.NoError(t, stmt.SetSqlQuery(context.Background(), "SELECT CAST(? AS INTEGER) AS val"))
+	require.NoError(t, stmt.Prepare(context.Background()))
+
+	schema, err := stmt.GetParameterSchema(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, schema.NumFields())
+
+	bldr := array.NewRecordBuilder(memory.DefaultAllocator, arrow.NewSchema(
+		[]arrow.Field{{Name: "$1", Type: arrow.BinaryTypes.String, Nullable: true}}, nil,
+	))
+	bldr.Field(0).(*array.StringBuilder).Append("42")
+	rec := bldr.NewRecordBatch()
+	defer rec.Release()
+
+	require.NoError(t, stmt.Bind(context.Background(), rec))
+
+	rdr, _, err := stmt.ExecuteQuery(context.Background())
+	require.NoError(t, err)
+	defer rdr.Release()
+
+	require.True(t, rdr.Next())
+	result := rdr.RecordBatch()
+	assert.EqualValues(t, 42, result.Column(0).(*array.Int32).Value(0))
+}
+
+func TestIntegration_ParameterizedQuery_AllLiteralTypes(t *testing.T) {
+	conn := integrationConn(t)
+
+	stmt, err := conn.NewStatement(context.Background())
+	require.NoError(t, err)
+	defer stmt.Close(context.Background())
+
+	require.NoError(t, stmt.SetSqlQuery(context.Background(), `SELECT
+		? AS tinyint_col,
+		? AS smallint_col,
+		? AS int_col,
+		? AS bigint_col,
+		? AS real_col,
+		? AS double_col,
+		? AS bool_col,
+		? AS str_col,
+		? AS date_col,
+		? AS ts_col,
+		? AS ts_tz_col,
+		? AS time_col,
+		? AS bin_col,
+		? AS decimal_col,
+		? AS null_col`))
+	require.NoError(t, stmt.Prepare(context.Background()))
+
+	paramSchema, err := stmt.GetParameterSchema(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 15, paramSchema.NumFields())
+
+	bldr := array.NewRecordBuilder(memory.DefaultAllocator, arrow.NewSchema([]arrow.Field{
+		{Name: "$1", Type: arrow.PrimitiveTypes.Int8, Nullable: true},
+		{Name: "$2", Type: arrow.PrimitiveTypes.Int16, Nullable: true},
+		{Name: "$3", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+		{Name: "$4", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+		{Name: "$5", Type: arrow.PrimitiveTypes.Float32, Nullable: true},
+		{Name: "$6", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+		{Name: "$7", Type: arrow.FixedWidthTypes.Boolean, Nullable: true},
+		{Name: "$8", Type: arrow.BinaryTypes.String, Nullable: true},
+		{Name: "$9", Type: arrow.FixedWidthTypes.Date32, Nullable: true},
+		{Name: "$10", Type: &arrow.TimestampType{Unit: arrow.Microsecond}, Nullable: true},
+		{Name: "$11", Type: &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}, Nullable: true},
+		{Name: "$12", Type: arrow.FixedWidthTypes.Time64us, Nullable: true},
+		{Name: "$13", Type: arrow.BinaryTypes.Binary, Nullable: true},
+		{Name: "$14", Type: &arrow.Decimal128Type{Precision: 5, Scale: 2}, Nullable: true},
+		{Name: "$15", Type: arrow.BinaryTypes.String, Nullable: true},
+	}, nil))
+
+	bldr.Field(0).(*array.Int8Builder).Append(42)
+	bldr.Field(1).(*array.Int16Builder).Append(1000)
+	bldr.Field(2).(*array.Int32Builder).Append(123456)
+	bldr.Field(3).(*array.Int64Builder).Append(9876543210)
+	bldr.Field(4).(*array.Float32Builder).Append(3.14)
+	bldr.Field(5).(*array.Float64Builder).Append(2.718281828)
+	bldr.Field(6).(*array.BooleanBuilder).Append(true)
+	bldr.Field(7).(*array.StringBuilder).Append("hello")
+	bldr.Field(8).(*array.Date32Builder).Append(arrow.Date32(20637))
+	bldr.Field(9).(*array.TimestampBuilder).Append(arrow.Timestamp(1783080000000000))
+	bldr.Field(10).(*array.TimestampBuilder).Append(arrow.Timestamp(1783080000000000))
+	bldr.Field(11).(*array.Time64Builder).Append(arrow.Time64(45045123456))
+	bldr.Field(12).(*array.BinaryBuilder).Append([]byte{0xab, 0xcd, 0xef})
+	bldr.Field(13).AppendValueFromString("3.14")
+	bldr.Field(14).AppendNull()
+
+	rec := bldr.NewRecordBatch()
+	defer rec.Release()
+
+	require.NoError(t, stmt.Bind(context.Background(), rec))
+
+	rdr, _, err := stmt.ExecuteQuery(context.Background())
+	require.NoError(t, err)
+	defer rdr.Release()
+
+	require.True(t, rdr.Next())
+	result := rdr.RecordBatch()
+	require.EqualValues(t, 15, result.NumCols())
+
+	assert.EqualValues(t, 42, result.Column(0).(*array.Int32).Value(0), "tinyint_col")
+	assert.EqualValues(t, 1000, result.Column(1).(*array.Int32).Value(0), "smallint_col")
+	assert.EqualValues(t, 123456, result.Column(2).(*array.Int32).Value(0), "int_col")
+	assert.EqualValues(t, 9876543210, result.Column(3).(*array.Int64).Value(0), "bigint_col")
+	assert.InDelta(t, 3.14, result.Column(4).(*array.Float64).Value(0), 1e-2, "real_col")
+	assert.InDelta(t, 2.718281828, result.Column(5).(*array.Float64).Value(0), 1e-9, "double_col")
+	assert.True(t, result.Column(6).(*array.Boolean).Value(0), "bool_col")
+	assert.Equal(t, "hello", result.Column(7).(*array.String).Value(0), "str_col")
+	assert.EqualValues(t, arrow.Date32(20637), result.Column(8).(*array.Date32).Value(0), "date_col")
+	assert.NotZero(t, result.Column(9).(*array.Timestamp).Value(0), "ts_col")
+	assert.NotZero(t, result.Column(10).(*array.Timestamp).Value(0), "ts_tz_col")
+	assert.EqualValues(t, arrow.Time64(45045123456), result.Column(11).(*array.Time64).Value(0), "time_col")
+	assert.Equal(t, []byte{0xab, 0xcd, 0xef}, result.Column(12).(*array.Binary).Value(0), "bin_col")
+	assert.InDelta(t, 3.14, result.Column(13).(*array.Decimal128).Value(0).ToFloat64(2), 1e-9, "decimal_col")
+	assert.True(t, result.Column(14).IsNull(0), "null_col")
+}
