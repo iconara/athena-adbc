@@ -255,13 +255,15 @@ SELECT
   TIMESTAMP '2024-01-15 12:30:00.123456789'            AS ts_9_col,
   TIMESTAMP '2024-01-15 12:30:00.123 America/New_York' AS ts_tz_name_col,
   TIMESTAMP '2024-01-15 12:30:00.123 +03:45'           AS ts_tz_offset_col,
+  IPADDRESS '192.168.0.1'                              AS ipaddress_col,
+  UUID '9409d3f1-01e6-4380-8a04-aecc50c7fa2e'          AS uuid_col,
   ARRAY[1, 2, 3]                       AS array_col,
   MAP(ARRAY['k'], ARRAY['v'])          AS map_col,
   CAST(MAP(ARRAY['k'], ARRAY['v']) AS JSON) AS json_col
 `
 	rec := runQuery(t, conn, query)
 
-	require.EqualValues(t, 18, rec.NumCols(), "expected 18 columns")
+	require.EqualValues(t, 20, rec.NumCols(), "expected 18 columns")
 	require.EqualValues(t, 1, rec.NumRows(), "expected 1 row")
 
 	schema := rec.Schema()
@@ -290,10 +292,14 @@ SELECT
 	assert.Equal(t, tstzType, schema.Field(13).Type, "ts_tz_name_col")
 	assert.Equal(t, tstzType, schema.Field(14).Type, "ts_tz_offset_col")
 
+	// Special types are stringified
+	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(15).Type, "ipaddress_col")
+	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(16).Type, "uuid_col")
+	
 	// Nested types are stringified.
-	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(15).Type, "array_col")
-	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(16).Type, "map_col")
-	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(17).Type, "json_col")
+	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(17).Type, "array_col")
+	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(18).Type, "map_col")
+	assert.Equal(t, arrow.BinaryTypes.String, schema.Field(19).Type, "json_col")
 
 	// Spot-check scalar values.
 	assert.Equal(t, "hello", rec.Column(0).(*array.String).Value(0))
@@ -326,8 +332,12 @@ SELECT
 	const plus0345Ns = (3*3600 + 45*60) * int64(1_000_000_000)
 	assert.EqualValues(t, baseNs-plus0345Ns+123_000_000, rec.Column(14).(*array.Timestamp).Value(0), "ts_tz_offset_col")
 
+	// Special types are stringified
+	assert.Equal(t, "192.168.0.1", rec.Column(15).(*array.String).Value(0))
+	assert.Equal(t, "9409d3f1-01e6-4380-8a04-aecc50c7fa2e", rec.Column(16).(*array.String).Value(0))
+
 	// Nested columns must be strings.
-	assert.Equal(t, "[1, 2, 3]", rec.Column(15).(*array.String).Value(0))
-	assert.Equal(t, "{k=v}", rec.Column(16).(*array.String).Value(0))
-	assert.Equal(t, "{\"k\":\"v\"}", rec.Column(17).(*array.String).Value(0))
+	assert.Equal(t, "[1, 2, 3]", rec.Column(17).(*array.String).Value(0))
+	assert.Equal(t, "{k=v}", rec.Column(18).(*array.String).Value(0))
+	assert.Equal(t, "{\"k\":\"v\"}", rec.Column(19).(*array.String).Value(0))
 }
