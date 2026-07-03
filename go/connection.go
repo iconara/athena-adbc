@@ -84,6 +84,16 @@ func (c *connectionImpl) fetchVendorVersion(ctx context.Context) error {
 	return nil
 }
 
+func (c *connectionImpl) SetAutocommit(_ context.Context, enabled bool) error {
+	if !enabled {
+		return adbc.Error{
+			Code: adbc.StatusNotImplemented,
+			Msg:  "[athena] Athena does not support multi-statement transactions",
+		}
+	}
+	return nil
+}
+
 func (c *connectionImpl) Close(_ context.Context) error {
 	c.athenaClient = nil
 	c.db = nil

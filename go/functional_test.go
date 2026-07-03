@@ -1500,3 +1500,29 @@ func TestFunctional_Connection_SetOption_CurrentDbSchema(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "my_schema", val)
 }
+
+func TestFunctional_Connection_GetOption_Autocommit(t *testing.T) {
+	conn := newTestWrappedConn(t)
+	gso := conn.(adbc.GetSetOptionsWithContext)
+
+	val, err := gso.GetOption(context.Background(), adbc.OptionKeyAutoCommit)
+	require.NoError(t, err)
+	assert.Equal(t, adbc.OptionValueEnabled, val)
+}
+
+func TestFunctional_Connection_SetOption_Autocommit_True(t *testing.T) {
+	conn := newTestWrappedConn(t)
+	gso := conn.(adbc.GetSetOptionsWithContext)
+
+	err := gso.SetOption(context.Background(), adbc.OptionKeyAutoCommit, adbc.OptionValueEnabled)
+	require.NoError(t, err)
+}
+
+func TestFunctional_Connection_SetOption_Autocommit_False(t *testing.T) {
+	conn := newTestWrappedConn(t)
+	gso := conn.(adbc.GetSetOptionsWithContext)
+
+	err := gso.SetOption(context.Background(), adbc.OptionKeyAutoCommit, adbc.OptionValueDisabled)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not support multi-statement transactions")
+}
