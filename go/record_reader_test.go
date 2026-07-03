@@ -52,6 +52,8 @@ func TestAthenaTypeStringToArrow(t *testing.T) {
 		{"timestamp with time zone", &arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: "UTC"}},
 		{"varbinary", arrow.BinaryTypes.Binary},
 		{"binary", arrow.BinaryTypes.Binary},
+		{"time", arrow.FixedWidthTypes.Time64us},
+		{"time with time zone", arrow.FixedWidthTypes.Time64us},
 		{"interval day to second", arrow.FixedWidthTypes.DayTimeInterval},
 		{"interval year to month", arrow.FixedWidthTypes.MonthInterval},
 		{"hyperloglog", arrow.BinaryTypes.Binary},
@@ -408,6 +410,92 @@ func TestBuildRecordBatch_AllTypes(t *testing.T) {
 			func(t *testing.T, col arrow.Array) {
 				require.Equal(t, arrow.BinaryTypes.Binary, col.DataType())
 				assert.Equal(t, []byte("world"), col.(*array.Binary).Value(0))
+			},
+		},
+		{
+			"time",
+			"12:30:45.123456",
+			func(t *testing.T, col arrow.Array) {
+				require.Equal(t, arrow.FixedWidthTypes.Time64us, col.DataType())
+				// 12h30m45.123456s in microseconds
+				expected := arrow.Time64(12*3600*1e6 + 30*60*1e6 + 45*1e6 + 123456)
+				assert.Equal(t, expected, col.(*array.Time64).Value(0))
+			},
+		},
+		{
+			"time",
+			"12:30:45",
+			func(t *testing.T, col arrow.Array) {
+				require.Equal(t, arrow.FixedWidthTypes.Time64us, col.DataType())
+				expected := arrow.Time64(12*3600*1e6 + 30*60*1e6 + 45*1e6)
+				assert.Equal(t, expected, col.(*array.Time64).Value(0))
+			},
+		},
+		{
+			"time",
+			"12:30:45.123",
+			func(t *testing.T, col arrow.Array) {
+				require.Equal(t, arrow.FixedWidthTypes.Time64us, col.DataType())
+				expected := arrow.Time64(12*3600*1e6 + 30*60*1e6 + 45*1e6 + 123000)
+				assert.Equal(t, expected, col.(*array.Time64).Value(0))
+			},
+		},
+		{
+			"time",
+			"00:00:00.000000",
+			func(t *testing.T, col arrow.Array) {
+				require.Equal(t, arrow.FixedWidthTypes.Time64us, col.DataType())
+				assert.Equal(t, arrow.Time64(0), col.(*array.Time64).Value(0))
+			},
+		},
+		{
+			"time with time zone",
+			"12:30:45.123456 +05:30",
+			func(t *testing.T, col arrow.Array) {
+				require.Equal(t, arrow.FixedWidthTypes.Time64us, col.DataType())
+				// 12:30:45.123456 +05:30 = 07:00:45.123456 UTC
+				expected := arrow.Time64(7*3600*1e6 + 0*60*1e6 + 45*1e6 + 123456)
+				assert.Equal(t, expected, col.(*array.Time64).Value(0))
+			},
+		},
+		{
+			"time with time zone",
+			"12:30:45+05:30",
+			func(t *testing.T, col arrow.Array) {
+				require.Equal(t, arrow.FixedWidthTypes.Time64us, col.DataType())
+				// 12:30:45+05:30 = 07:00:45 UTC
+				expected := arrow.Time64(7*3600*1e6 + 0*60*1e6 + 45*1e6)
+				assert.Equal(t, expected, col.(*array.Time64).Value(0))
+			},
+		},
+		{
+			"time with time zone",
+			"12:30:45.123+05:30",
+			func(t *testing.T, col arrow.Array) {
+				require.Equal(t, arrow.FixedWidthTypes.Time64us, col.DataType())
+				// 12:30:45.123+05:30 = 07:00:45.123 UTC
+				expected := arrow.Time64(7*3600*1e6 + 0*60*1e6 + 45*1e6 + 123000)
+				assert.Equal(t, expected, col.(*array.Time64).Value(0))
+			},
+		},
+		{
+			"time with time zone",
+			"12:30:45.123456+05:30",
+			func(t *testing.T, col arrow.Array) {
+				require.Equal(t, arrow.FixedWidthTypes.Time64us, col.DataType())
+				// 12:30:45.123456+05:30 = 07:00:45.123456 UTC (no space before offset)
+				expected := arrow.Time64(7*3600*1e6 + 0*60*1e6 + 45*1e6 + 123456)
+				assert.Equal(t, expected, col.(*array.Time64).Value(0))
+			},
+		},
+		{
+			"time with time zone",
+			"08:00:00-03:00",
+			func(t *testing.T, col arrow.Array) {
+				require.Equal(t, arrow.FixedWidthTypes.Time64us, col.DataType())
+				// 08:00:00 -03:00 = 11:00:00 UTC
+				expected := arrow.Time64(11 * 3600 * 1e6)
+				assert.Equal(t, expected, col.(*array.Time64).Value(0))
 			},
 		},
 		{

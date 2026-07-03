@@ -111,6 +111,8 @@ func athenaTypeStringToArrow(t string) arrow.DataType {
 		return arrow.FixedWidthTypes.Boolean
 	case "date":
 		return arrow.FixedWidthTypes.Date32
+	case "time", "time with time zone":
+		return arrow.FixedWidthTypes.Time64us
 	case "timestamp":
 		return &arrow.TimestampType{Unit: arrow.Nanosecond}
 	case "timestamp with time zone":
@@ -235,6 +237,12 @@ func appendValue(bldr array.Builder, dt arrow.DataType, val string, isNull bool)
 			return err
 		}
 		bldr.(*array.Decimal128Builder).Append(n)
+	case arrow.TIME64:
+		v, err := parseTimeToMicros(val)
+		if err != nil {
+			return err
+		}
+		bldr.(*array.Time64Builder).Append(v)
 	case arrow.INTERVAL_DAY_TIME:
 		v, err := parseDayTimeInterval(val)
 		if err != nil {
@@ -252,6 +260,66 @@ func appendValue(bldr array.Builder, dt arrow.DataType, val string, isNull bool)
 		bldr.(*array.StringBuilder).Append(val)
 	}
 	return nil
+}
+
+// parseTimeToMicros parses Athena's time string into microseconds since midnight.
+// Handles both "HH:MM:SS.ffffff" (plain time) and "HH:MM:SS.ffffff TZ" (time with timezone).
+// The timezone may be separated by a space or attached directly (e.g. "12:30:45.123+05:30").
+// For time with timezone, the value is normalized to UTC.
+func parseTimeToMicros(val string) (arrow.Time64, error) {
+	timePart, offsetMicros, err := splitTimeAndOffset(val)
+	if err != nil {
+		return 0, err
+	}
+
+	t, err := arrow.Time64FromString(timePart, arrow.Microsecond)
+	if err != nil {
+		return 0, err
+	}
+
+	return t - arrow.Time64(offsetMicros), nil
+}
+
+func splitTimeAndOffset(val string) (string, int64, error) {
+	// Check for space-separated timezone: "12:30:45.123 UTC" or "12:30:45.123 +05:30"
+	if spaceIdx := strings.IndexByte(val, ' '); spaceIdx > 0 {
+		offset, err := parseTimezoneOffset(val[spaceIdx+1:])
+		return val[:spaceIdx], offset, err
+	}
+
+	// Check for offset attached directly after fractional seconds: "12:30:45.123+05:30" or "12:30:45.123-03:00"
+	// The offset is always ±HH:MM (6 chars) at the end.
+	if len(val) > 6 {
+		offsetStart := len(val) - 6
+		if val[offsetStart] == '+' || val[offsetStart] == '-' {
+			offset, err := parseTimezoneOffset(val[offsetStart:])
+			return val[:offsetStart], offset, err
+		}
+	}
+
+	return val, 0, nil
+}
+
+func parseTimezoneOffset(tzStr string) (int64, error) {
+	if tzStr == "UTC" || tzStr == "Z" {
+		return 0, nil
+	}
+	if len(tzStr) == 6 && (tzStr[0] == '+' || tzStr[0] == '-') {
+		h, err := strconv.ParseInt(tzStr[1:3], 10, 32)
+		if err != nil {
+			return 0, fmt.Errorf("parsing timezone hours: %w", err)
+		}
+		m, err := strconv.ParseInt(tzStr[4:6], 10, 32)
+		if err != nil {
+			return 0, fmt.Errorf("parsing timezone minutes: %w", err)
+		}
+		offset := (h*3600 + m*60) * 1_000_000
+		if tzStr[0] == '-' {
+			offset = -offset
+		}
+		return offset, nil
+	}
+	return 0, nil
 }
 
 // parseDayTimeInterval parses Athena's "D HH:MM:SS.mmm" format into an Arrow DayTimeInterval.
