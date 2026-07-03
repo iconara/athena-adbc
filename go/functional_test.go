@@ -1454,3 +1454,49 @@ func TestFunctional_GetInfo_AllCodes(t *testing.T) {
 	assert.True(t, codes[adbc.InfoDriverArrowVersion], "missing InfoDriverArrowVersion")
 	assert.True(t, codes[adbc.InfoDriverADBCVersion], "missing InfoDriverADBCVersion")
 }
+
+// ---------------------------------------------------------------------------
+// Connection GetSetOptions tests
+// ---------------------------------------------------------------------------
+
+func TestFunctional_Connection_GetOption_CurrentCatalog(t *testing.T) {
+	conn := newTestWrappedConn(t)
+	gso := conn.(adbc.GetSetOptionsWithContext)
+
+	val, err := gso.GetOption(context.Background(), adbc.OptionKeyCurrentCatalog)
+	require.NoError(t, err)
+	assert.Equal(t, "AwsDataCatalog", val)
+}
+
+func TestFunctional_Connection_GetOption_CurrentDbSchema(t *testing.T) {
+	conn := newTestWrappedConn(t)
+	gso := conn.(adbc.GetSetOptionsWithContext)
+
+	val, err := gso.GetOption(context.Background(), adbc.OptionKeyCurrentDbSchema)
+	require.NoError(t, err)
+	assert.Equal(t, "default", val)
+}
+
+func TestFunctional_Connection_SetOption_CurrentCatalog(t *testing.T) {
+	conn := newTestWrappedConn(t)
+	gso := conn.(adbc.GetSetOptionsWithContext)
+	ctx := context.Background()
+
+	require.NoError(t, gso.SetOption(ctx, adbc.OptionKeyCurrentCatalog, "NewCatalog"))
+
+	val, err := gso.GetOption(ctx, adbc.OptionKeyCurrentCatalog)
+	require.NoError(t, err)
+	assert.Equal(t, "NewCatalog", val)
+}
+
+func TestFunctional_Connection_SetOption_CurrentDbSchema(t *testing.T) {
+	conn := newTestWrappedConn(t)
+	gso := conn.(adbc.GetSetOptionsWithContext)
+	ctx := context.Background()
+
+	require.NoError(t, gso.SetOption(ctx, adbc.OptionKeyCurrentDbSchema, "my_schema"))
+
+	val, err := gso.GetOption(ctx, adbc.OptionKeyCurrentDbSchema)
+	require.NoError(t, err)
+	assert.Equal(t, "my_schema", val)
+}
