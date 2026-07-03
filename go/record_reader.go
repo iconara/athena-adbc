@@ -121,6 +121,8 @@ func athenaTypeStringToArrow(t string) arrow.DataType {
 		return arrow.FixedWidthTypes.DayTimeInterval
 	case "interval year to month":
 		return arrow.FixedWidthTypes.MonthInterval
+	case "hyperloglog", "p4hyperloglog", "setdigest", "qdigest", "tdigest":
+		return arrow.BinaryTypes.Binary
 	default:
 		// array, map, row, json — stringify
 		return arrow.BinaryTypes.String

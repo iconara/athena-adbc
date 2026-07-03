@@ -261,11 +261,15 @@ SELECT
   UUID '9409d3f1-01e6-4380-8a04-aecc50c7fa2e'          AS uuid_col,
   ARRAY[1, 2, 3]                       AS array_col,
   MAP(ARRAY['k'], ARRAY['v'])          AS map_col,
-  CAST(MAP(ARRAY['k'], ARRAY['v']) AS JSON) AS json_col
+  CAST(MAP(ARRAY['k'], ARRAY['v'])     AS JSON) AS json_col,
+  APPROX_SET(123)                      	 AS hll_col,
+  CAST(APPROX_SET(123) AS P4HyperLogLog) AS p4hll_col,
+  QDIGEST_AGG(123)                       AS qdigest_col,
+  TDIGEST_AGG(123)                       AS tdigest_col
 `
 	rec := runQuery(t, conn, query)
 
-	require.EqualValues(t, 22, rec.NumCols(), "expected 18 columns")
+	require.EqualValues(t, 26, rec.NumCols(), "expected 26 columns")
 	require.EqualValues(t, 1, rec.NumRows(), "expected 1 row")
 
 	schema := rec.Schema()
@@ -350,4 +354,14 @@ SELECT
 	assert.Equal(t, "[1, 2, 3]", rec.Column(19).(*array.String).Value(0))
 	assert.Equal(t, "{k=v}", rec.Column(20).(*array.String).Value(0))
 	assert.Equal(t, "{\"k\":\"v\"}", rec.Column(21).(*array.String).Value(0))
+
+	// Sketch types are returned as binary.
+	assert.Equal(t, arrow.BinaryTypes.Binary, schema.Field(22).Type, "hll_col")
+	assert.Equal(t, arrow.BinaryTypes.Binary, schema.Field(23).Type, "p4hll_col")
+	assert.Equal(t, arrow.BinaryTypes.Binary, schema.Field(24).Type, "qdigest_col")
+	assert.Equal(t, arrow.BinaryTypes.Binary, schema.Field(25).Type, "tdigest_col")
+	assert.NotEmpty(t, rec.Column(22).(*array.Binary).Value(0), "hll_col")
+	assert.NotEmpty(t, rec.Column(23).(*array.Binary).Value(0), "p4hll_col")
+	assert.NotEmpty(t, rec.Column(24).(*array.Binary).Value(0), "qdigest_col")
+	assert.NotEmpty(t, rec.Column(25).(*array.Binary).Value(0), "tdigest_col")
 }
