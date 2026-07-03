@@ -215,6 +215,81 @@ func singlePageResults(colName string, values []string) func(context.Context, *a
 // Functional tests
 // ---------------------------------------------------------------------------
 
+func TestFunctional_ExecuteSchema_AppendsLimit0(t *testing.T) {
+	const execID = "exec-schema-001"
+	var capturedQuery string
+	mock := &mockAthenaClient{
+		startQueryExecutionFn: func(_ context.Context, params *athenaSDK.StartQueryExecutionInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.StartQueryExecutionOutput, error) {
+			capturedQuery = *params.QueryString
+			return &athenaSDK.StartQueryExecutionOutput{QueryExecutionId: strp(execID)}, nil
+		},
+		getQueryExecutionFn: succeedAfterN(0),
+		getQueryResultsFn: func(_ context.Context, _ *athenaSDK.GetQueryResultsInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetQueryResultsOutput, error) {
+			return &athenaSDK.GetQueryResultsOutput{
+				ResultSet: &types.ResultSet{
+					ResultSetMetadata: &types.ResultSetMetadata{
+						ColumnInfo: []types.ColumnInfo{{Name: strp("x"), Type: strp("integer")}},
+					},
+					Rows: []types.Row{{Data: []types.Datum{{VarCharValue: strp("x")}}}},
+				},
+			}, nil
+		},
+	}
+
+	stmt := newTestStmt(t, mock)
+	require.NoError(t, stmt.SetSqlQuery("SELECT id, name FROM users -- list users"))
+
+	_, err := stmt.ExecuteSchema(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, "SELECT * FROM (SELECT id, name FROM users -- list users\n) LIMIT 0", capturedQuery)
+	assert.Equal(t, "SELECT id, name FROM users -- list users", stmt.query)
+}
+
+func TestFunctional_ExecuteSchema_ReturnsSchema(t *testing.T) {
+	const execID = "exec-schema-002"
+	mock := &mockAthenaClient{
+		startQueryExecutionFn: func(_ context.Context, _ *athenaSDK.StartQueryExecutionInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.StartQueryExecutionOutput, error) {
+			return &athenaSDK.StartQueryExecutionOutput{QueryExecutionId: strp(execID)}, nil
+		},
+		getQueryExecutionFn: succeedAfterN(0),
+		getQueryResultsFn: func(_ context.Context, _ *athenaSDK.GetQueryResultsInput, _ ...func(*athenaSDK.Options)) (*athenaSDK.GetQueryResultsOutput, error) {
+			return &athenaSDK.GetQueryResultsOutput{
+				ResultSet: &types.ResultSet{
+					ResultSetMetadata: &types.ResultSetMetadata{
+						ColumnInfo: []types.ColumnInfo{
+							{Name: strp("id"), Type: strp("integer")},
+							{Name: strp("name"), Type: strp("varchar")},
+						},
+					},
+					Rows: []types.Row{
+						{Data: []types.Datum{{VarCharValue: strp("id")}, {VarCharValue: strp("name")}}},
+					},
+				},
+			}, nil
+		},
+	}
+
+	stmt := newTestStmt(t, mock)
+	require.NoError(t, stmt.SetSqlQuery("SELECT id, name FROM users"))
+
+	schema, err := stmt.ExecuteSchema(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, schema)
+
+	assert.Equal(t, 2, schema.NumFields())
+	assert.Equal(t, "id", schema.Field(0).Name)
+	assert.Equal(t, "name", schema.Field(1).Name)
+}
+
+func TestFunctional_ExecuteSchema_NoQuery(t *testing.T) {
+	stmt := newTestStmt(t, &mockAthenaClient{})
+
+	_, err := stmt.ExecuteSchema(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no query set")
+}
+
 // TestFunctional_SimpleSelectQuery exercises the full execution path:
 // StartQueryExecution → poll RUNNING twice → SUCCEEDED → GetQueryResults → RecordReader.
 func TestFunctional_SimpleSelectQuery(t *testing.T) {

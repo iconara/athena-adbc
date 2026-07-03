@@ -70,11 +70,49 @@ func (s *statementImpl) Prepare(_ context.Context) error {
 	}
 }
 
-func (s *statementImpl) ExecuteSchema(_ context.Context) (*arrow.Schema, error) {
-	return nil, adbc.Error{
-		Code: adbc.StatusNotImplemented,
-		Msg:  "[athena] ExecuteSchema not implemented",
+func (s *statementImpl) ExecuteSchema(ctx context.Context) (*arrow.Schema, error) {
+	if s.conn == nil {
+		return nil, adbc.Error{
+			Msg:  "[athena] statement already closed",
+			Code: adbc.StatusInvalidState,
+		}
 	}
+	if s.query == "" {
+		return nil, adbc.Error{
+			Code: adbc.StatusInvalidState,
+			Msg:  "[athena] no query set",
+		}
+	}
+
+	original := s.query
+	s.query = "SELECT * FROM (" + s.query + "\n) LIMIT 0"
+	defer func() { s.query = original }()
+
+	execID, err := s.startQuery(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.waitForQuery(ctx, execID); err != nil {
+		return nil, err
+	}
+
+	input := &athenaSDK.GetQueryResultsInput{
+		QueryExecutionId: execID,
+	}
+	out, err := s.conn.athenaClient.GetQueryResults(ctx, input)
+	if err != nil {
+		return nil, adbc.Error{
+			Code: adbc.StatusIO,
+			Msg:  fmt.Sprintf("[athena] GetQueryResults failed: %v", err),
+		}
+	}
+
+	if out.ResultSet != nil && out.ResultSet.ResultSetMetadata != nil && len(out.ResultSet.ResultSetMetadata.ColumnInfo) > 0 {
+		return buildSchema(out.ResultSet.ResultSetMetadata.ColumnInfo), nil
+	}
+
+	return arrow.NewSchema(nil, nil), nil
 }
 
 // ExecuteQuery runs the SQL query on Athena, waits for completion, and returns
